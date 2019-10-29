@@ -1,0 +1,122 @@
+group:
+  youtube:
+    view: no
+    control: hidden
+    name: Youtube
+    entities:
+      - input_number.volume_music
+      - input_boolean.play_music
+      - input_select.media_player
+      - input_select.music
+      - script.play_music_keyword
+      - input_text.nhac1
+
+input_boolean:
+  play_music:
+    name: Youtube
+    initial: off
+    icon: mdi:play
+
+
+input_select:
+  music:
+    name: Select Playlist
+    options: #list nhac
+      - Mỹ Tâm
+      - Đan Trường
+      - Quang Lê
+      - Đan Nguyên
+      - Acoustic 8x
+    icon: mdi:music
+
+  media_player:
+    name: Speakers
+    options: 
+      - Livingroom
+      - Chromecast
+    icon: mdi:speaker-wireless
+
+ 
+input_number:
+  volume_music:
+    name: Volume
+    icon: mdi:volume-high
+    min: 0
+    max: 1
+    step: 0.05
+    initial: '0.4'
+
+input_text:
+  nhac1:
+    name: Nhập từ khoá
+
+script:
+  play_music_keyword:
+    sequence:
+      - service: input_boolean.turn_off
+        entity_id: input_boolean.turn_off
+      - service: youtube.play
+        data_template:
+          entity_id: >
+            {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+            {% elif is_state("input_select.media_player", "Chromecast") %} media_player.mini
+            {% endif %}
+          key_word: "{{states('input_text.nhac1')}}"
+#          media_content_type: music
+
+automation:
+  - alias: Set Music Volume
+    initial_state: true
+    trigger:
+      platform: state
+      entity_id: input_number.volume_music
+    action:
+      service: media_player.volume_set
+      data_template:
+        entity_id: >
+          {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+          {% elif is_state("input_select.media_player", "Chromecast") %} media_player.mini
+          {% endif %}
+        volume_level: '{{  states.input_number.volume_music.state  }}'
+
+  - alias: Play select music
+    initial_state: true
+    trigger:
+    - platform: state
+      entity_id: input_select.music
+    action:
+      - service: youtube.play
+        data_template:
+          entity_id: >
+            {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+            {% elif is_state("input_select.media_player", "Chromecast") %} media_player.mini
+            {% endif %}
+          key_word: >
+            {% if is_state("input_select.music", "Mỹ Tâm") %} "mỹ tâm"            
+            {% elif is_state("input_select.music", "Đan Trường") %} "đan trường"
+            {% elif is_state("input_select.music", "Quang Lê") %} "quang lê"
+            {% elif is_state("input_select.music", "Đan Nguyên") %} "đan nguyên"
+            {% elif is_state("input_select.music", "Acoustic 8x") %} "acoustic 8x"
+            {% endif %}
+#          media_content_type: music
+      - service: input_boolean.turn_on
+        entity_id: input_boolean.play_music
+
+  - alias: Stop music
+    initial_state: true
+    trigger:
+    - platform: state
+      entity_id: input_boolean.play_music
+      to: 'off'
+    action:
+    - service: media_player.turn_off
+      data_template:
+        entity_id: >
+          {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+          {% elif is_state("input_select.media_player", "Chromecast") %} media_player.mini
+          {% endif %}
+    - service: input_number.set_value
+      data_template:
+        entity_id: input_number.volume_music
+        value: 0.4
+

@@ -1,0 +1,71 @@
+radio_vn:
+
+group:
+  radio_vn:
+    name: "Radio VN"
+    view: no
+    control: hidden
+    entities:
+      - input_boolean.radio_vn
+      - input_select.radio_vn
+      - automation.play_radio_by_select_channel
+      - automation.play_radio_by_turn_on
+      - input_select.media_player
+input_boolean:
+  radio_vn:
+    name: Play radio
+    icon: mdi:radio
+    
+input_select:
+  radio_vn:
+    name: Channel
+    options:
+      - VOV1
+      - VOV2
+      - VOV3
+      - VOVGT-HN
+      - VOVGT-HCM
+    initial: VOV3
+    icon: mdi:format-list-checkbox
+
+automation:
+  - alias: "play radio by select channel"
+    trigger:
+      - platform: state
+        entity_id: input_select.radio_vn
+      - platform: state
+        entity_id: input_boolean.radio_vn
+        to: 'on'
+    condition:
+      condition: state
+      entity_id: input_boolean.radio_vn
+      state: 'on'
+    action:
+      service: radio_vn.play
+      data_template:
+#        entity_id: media_player.room_player
+#        channel: 'VOV2' # optional, default: 'VOV3' #list channel: VOV1, VOV2, VOV3, VOVGT-HN, VOVGT-HCM      
+        entity_id: >
+          {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+          {% elif is_state("input_select.media_player", "Mini") %} media_player.mini
+          {% endif %}
+        channel: >
+          {% if is_state("input_select.radio_vn", "VOV1") %} VOV1
+          {% elif is_state("input_select.radio_vn", "VOV2") %} VOV2
+          {% elif is_state("input_select.radio_vn", "VOV3") %} VOV3
+          {% elif is_state("input_select.radio_vn", "VOVGT-HN") %} VOVGT-HN
+          {% elif is_state("input_select.radio_vn", "VOVGT-HCM") %} VOVGT-HCM
+          {% endif %}          
+  - alias: "Stop Radio"
+    trigger:
+#      - platform: state
+#        entity_id: input_select.radio_vn
+      - platform: state
+        entity_id: input_boolean.radio_vn
+        to: 'off'
+    condition:
+      condition: state
+      entity_id: input_boolean.radio_vn
+      state: 'off'
+    action:
+      service: radio_vn.stop        

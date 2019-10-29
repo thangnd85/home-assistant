@@ -1,0 +1,8 @@
+{
+  "domain": "youtube",
+  "name": "Youtube player",
+  "documentation": "https://www.example.com",
+  "dependencies": [],
+  "codeowners": [],
+  "requirements": []
+}

@@ -1,0 +1,148 @@
+zing_mp3:
+
+group:
+  zing_mp3:
+    name: "Zing MP3"
+    control: hidden
+    entities:
+      - input_boolean.zing_mp3
+      - input_select.zing_mp3
+      - input_boolean.zing_repeat
+      - input_boolean.zing_shuffle
+      - automation.phat_nhac_da_chon
+      - automation.play_by_trigger_repeat_or_shuffle
+      - automation.play_by_turn_on
+      - input_select.media_player
+      - automation.stop_music
+
+input_boolean:
+  zing_mp3:
+    name: Play Zing MP3
+    icon: mdi:music-box
+  zing_repeat:  
+    name: Repeat
+    icon: mdi:repeat
+  zing_shuffle:  
+    name: Shuffle
+    icon: mdi:shuffle-variant
+    
+input_select:
+  zing_mp3:
+    name: Music type
+    options:
+      - Pop
+      - Country
+      - Rock
+      - Dance
+      - R&B
+      - Rap
+      - Soundtrack
+      - Nhac tre
+      - Thieu nhi
+      - Tru tinh
+      - Que huong
+      - Cach mang
+      - Rock Viet
+      - Rap Viet
+      - Dance Viet
+      - Khong loi
+      - Guitar
+    initial: Pop
+    icon: mdi:format-list-checkbox
+    
+automation:
+
+  - alias: "Phát nhạc đã chọn"
+    trigger:
+      - platform: state
+        entity_id: input_select.zing_mp3
+      - platform: state
+        entity_id: input_boolean.zing_mp3
+#      platform: state
+#      entity_id: 
+#        - input_boolean.zing_repeat
+#        - input_boolean.zing_shuffle
+#      to: 'on'
+      
+    condition:
+      condition: state
+      entity_id: input_boolean.zing_mp3
+      state: 'on'
+    action:
+    - service: notify.bot
+      data_template:
+        message: >
+          {% if is_state("input_select.zing_mp3", "Nhac tre") %} Nhạc trẻ
+          {% elif is_state("input_select.zing_mp3", "Tru tinh") %} Trữ tình
+          {% elif is_state("input_select.zing_mp3", "Que huong") %} Quê hương
+          {% elif is_state("input_select.zing_mp3", "Guitar") %} Guitar
+          {% elif is_state("input_select.zing_mp3", "Thieu nhi") %} Nhạc thiếu nhi
+          {% elif is_state("input_select.zing_mp3", "Dance Viet") %} Dance Việt
+          {% elif is_state("input_select.zing_mp3", "Khong loi") %} Nhạc không lời
+          {% elif is_state("input_select.zing_mp3", "Cach mang") %} Nhạc cách mạng
+          {% elif is_state("input_select.zing_mp3", "Rock Viet") %} Rock Việt
+          {% elif is_state("input_select.zing_mp3", "Rap Viet") %} Rap việt
+          {% elif is_state("input_select.zing_mp3", "Pop") %} Pop
+          {% elif is_state("input_select.zing_mp3", "Rock") %} Rock
+          {% elif is_state("input_select.zing_mp3", "Rap") %} Rap
+          {% elif is_state("input_select.zing_mp3", "Country") %} Country
+          {% elif is_state("input_select.zing_mp3", "Soundtrack") %} Nhạc phim
+          {% elif is_state("input_select.zing_mp3", "R&B") %} R&B
+          {% endif %} 
+        title: Đang phát
+    - service: notify.bot2
+      data_template:
+        message: >
+          {% if is_state("input_select.zing_mp3", "Nhac tre") %} Nhạc trẻ
+          {% elif is_state("input_select.zing_mp3", "Tru tinh") %} Trữ tình
+          {% elif is_state("input_select.zing_mp3", "Que huong") %} Quê hương
+          {% elif is_state("input_select.zing_mp3", "Guitar") %} Guitar
+          {% elif is_state("input_select.zing_mp3", "Thieu nhi") %} Nhạc thiếu nhi
+          {% elif is_state("input_select.zing_mp3", "Dance Viet") %} Dance Việt
+          {% elif is_state("input_select.zing_mp3", "Khong loi") %} Nhạc không lời
+          {% elif is_state("input_select.zing_mp3", "Cach mang") %} Nhạc cách mạng
+          {% elif is_state("input_select.zing_mp3", "Rock Viet") %} Rock Việt
+          {% elif is_state("input_select.zing_mp3", "Rap Viet") %} Rap việt
+          {% elif is_state("input_select.zing_mp3", "Pop") %} Pop
+          {% elif is_state("input_select.zing_mp3", "Rock") %} Rock
+          {% elif is_state("input_select.zing_mp3", "Rap") %} Rap
+          {% elif is_state("input_select.zing_mp3", "Country") %} Country
+          {% elif is_state("input_select.zing_mp3", "Soundtrack") %} Nhạc phim
+          {% elif is_state("input_select.zing_mp3", "R&B") %} R&B
+          {% endif %} 
+        title: Đang phát
+#      service: script.turn_on
+#      entity_id: script.play_zing_mp3
+    - service: zing_mp3.play
+      data_template:
+        shuffle: >
+          {% if is_state("input_boolean.zing_shuffle", "on") %} on
+          {% else %} off
+          {% endif %}
+        entity_id: >
+          {% if is_state("input_select.media_player", "Livingroom") %} media_player.speaker
+          {% elif is_state("input_select.media_player", "Mini") %} media_player.mini
+          {% endif %}
+        music_type: > 
+          {% if is_state("input_select.zing_mp3", "Nhac tre") %} nhac tre
+          {% elif is_state("input_select.zing_mp3", "Tru tinh") %} tru tinh
+          {% elif is_state("input_select.zing_mp3", "Que huong") %} que huong
+          {% elif is_state("input_select.zing_mp3", "Guitar") %} guitar
+          {% elif is_state("input_select.zing_mp3", "Thieu nhi") %} thieu nhi
+          {% elif is_state("input_select.zing_mp3", "Dance Viet") %} dance viet
+          {% elif is_state("input_select.zing_mp3", "Khong loi") %} khong loi
+          {% elif is_state("input_select.zing_mp3", "Cach mang") %} cach mang
+          {% elif is_state("input_select.zing_mp3", "Rock Viet") %} rock viet
+          {% elif is_state("input_select.zing_mp3", "Rap Viet") %} rap viet
+          {% elif is_state("input_select.zing_mp3", "Pop") %} pop
+          {% elif is_state("input_select.zing_mp3", "Rock") %} rock
+          {% elif is_state("input_select.zing_mp3", "Rap") %} rap
+          {% elif is_state("input_select.zing_mp3", "Country") %} country
+          {% elif is_state("input_select.zing_mp3", "Soundtrack") %} soundtrack
+          {% elif is_state("input_select.zing_mp3", "R&B") %} r&b
+          {% endif %} 
+        repeat: >
+          {% if is_state("input_boolean.zing_repeat", "on") %} on
+          {% else %} off
+          {% endif %}
+

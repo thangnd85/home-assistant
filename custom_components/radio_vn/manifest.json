@@ -1,0 +1,8 @@
+{
+"domain": "radio_vn",
+"name": "radio vn",
+"documentation": "https://www.example.com",
+"dependencies": [],
+"codeowners": ["exlab"],
+"requirements": []
+}
