@@ -4,23 +4,15 @@ Home-assistant custom addons and packages
 Add this line to configuration.yaml, at the home-assistant, see below:
 
 homeassistant:
-  # Name of the location where Home Assistant is running
   name: Home
-  # Location required to calculate the time the sun rises and sets
   latitude: (removed)
   longitude: (removed)
-  # Impacts weather/sunrise data (altitude above sea level in meters)
   elevation: 3
-  # metric for Metric, imperial for Imperial
   unit_system: metric
-  # Pick yours from here: http://en.wikipedia.org/wiki/List_of_tz_database_time_zones
   time_zone: Asia/Ho_Chi_Minh
-  # Customization file
   customize: !include customize.yaml
   whitelist_external_dirs:
-#    - /tmp
     - /share
-#    - /www
   packages: !include_dir_named packages
 
 Put folder "custom_components" and "packages" to homeassistant config folder.
@@ -66,8 +58,6 @@ Open your sensor section, add this:
 If you want to show text instead of show date in Lunar, open /custom component/lic_am/sensor.py
 Go to line number 109, change 
         return lunar_text #Hiện chữ
-#        return lunar_text #Hiện ngày
 To 
         return lunar_text2 #Hiện chữ
-#        return lunar_text #Hiện ngày
 
