@@ -16,13 +16,14 @@ homeassistant:
   packages: !include_dir_named packages
 
 Put folder "custom_components" and "packages" to homeassistant config folder.
+
 homeassistant
--custom_components
---youtube
---lich_am
---zing_mp3
---
--packages
+  -custom_components
+    --youtube
+    --lich_am
+    --zing_mp3
+    --
+  -packages
 
 Before use Zing MP3 and Youtube component, open youtube.yaml and zingmp3.yaml inside packages folder, replace media_player entity to your right entity. 
 Example: media_player.speaker to media_player.chromecast etc. 
