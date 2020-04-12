@@ -23,8 +23,8 @@ homeassistant
   
            --youtube
            --lich_am
-            --zing_mp3
-    -packages
+           --zing_mp3
+     -packages
   
 
 Before use Zing MP3 and Youtube component, open youtube.yaml and zingmp3.yaml inside packages folder, replace media_player entity to your right entity. 
@@ -71,3 +71,38 @@ To
 
         return lunar_text2 #Hiện chữ
 
+4. Automation for lunar calendar:
+
+         - id: '1583945801552'
+           alias: Nhắc mai rằm
+           description: ''
+           trigger:
+           - at: 06:02:00
+             platform: time
+           condition:
+           - condition: template
+             value_template: '{{ states("sensor.am_lich_ngay_mai")|int == 15}}'
+           action:
+           - data:
+               entity_id: media_player.mini
+               message: Ngày mai rằm nhé.
+             service: tts.google_translate_say
+         - id: '1583945929918'
+           alias: Nhắc hôm nay mùng 1
+           description: ''
+           trigger:
+           - at: 06:02:00
+             platform: time
+           condition:
+           - condition: template
+             value_template: '{{ states("sensor.ngay_am")|int == 1}}'
+           action:
+           - data:
+               entity_id: media_player.mini
+               message: Hôm nay là mùng một.
+             service: tts.google_translate_say
+			 
+5. Donate if you like my work using 
+         
+		 Momo, Airpay, ViettelPay (0985435 XXX) 
+         Paypal: nducthang85@gmail.com
