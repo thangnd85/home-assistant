@@ -1,16 +1,5 @@
 radio_vn:
 
-group:
-  radio_vn:
-    name: "Radio VN"
-    view: no
-    control: hidden
-    entities:
-      - input_boolean.radio_vn
-      - input_select.radio_vn
-      - automation.play_radio_by_select_channel
-      - automation.play_radio_by_turn_on
-      - input_select.media_player
 input_boolean:
   radio_vn:
     name: Play radio

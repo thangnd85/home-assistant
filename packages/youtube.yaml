@@ -1,16 +1,5 @@
 youtube:
-group:
-  youtube:
-    view: no
-    control: hidden
-    name: Youtube
-    entities:
-      - input_number.volume_music
-      - input_boolean.play_music
-      - input_select.media_player
-      - input_select.music
-      - script.play_music_keyword
-      - input_text.nhac1
+media_extractor:
 
 input_boolean:
   play_music:

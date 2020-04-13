@@ -1,20 +1,5 @@
 zing_mp3:
 
-group:
-  zing_mp3:
-    name: "Zing MP3"
-    control: hidden
-    entities:
-      - input_boolean.zing_mp3
-      - input_select.zing_mp3
-      - input_boolean.zing_repeat
-      - input_boolean.zing_shuffle
-      - automation.phat_nhac_da_chon
-      - automation.play_by_trigger_repeat_or_shuffle
-      - automation.play_by_turn_on
-      - input_select.media_player
-      - automation.stop_music
-
 input_boolean:
   zing_mp3:
     name: Play Zing MP3
