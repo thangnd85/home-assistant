@@ -106,3 +106,6 @@ To
          
 		 Momo, Airpay, ViettelPay (0985435 XXX) 
          Paypal: nducthang85@gmail.com
+
+Donate Momo / Airpay / ViettelPay
+![alt text](https://dummyimage.com/160x40/000/fff&text=0985435685)
