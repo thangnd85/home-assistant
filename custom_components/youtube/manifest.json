@@ -1,0 +1,9 @@
+{
+  "domain": "Youtube",
+  "name": "Youtube",
+  "documentation": "https://www.example.com",
+  "dependencies": [],
+  "codeowners": ["@thangnd85"],
+  "requirements": []
+  "version": "1.1"
+}

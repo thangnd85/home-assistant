@@ -1,0 +1,9 @@
+{
+  "domain": "zing_mp3",
+  "name": "ZingMP3",
+  "documentation": "https://www.example.com",
+  "dependencies": [],
+  "codeowners": ["@thangnd85"],
+  "requirements": []
+  "version": "1.1"
+}

@@ -13,16 +13,12 @@ default_type = 'nhac tre'
 
 import requests, time, random, urllib, re
 def get_codes(key_word):
-    # Get saved cache if exist
-#    info = hass.states.get('youtube_vn.info')
-#    if (info is not None and str(info.state) == key_word): 
-#    if (info is not None and 'VOV' in str(info.state)): 
-#        return info.attributes
 	key_word = key_word.lower()
 	query_string = urllib.parse.urlencode({"search_query" : key_word})
 	html_content = urllib.request.urlopen("http://www.youtube.com/results?" + query_string)
-	search_results = re.findall(r'href=\"\/watch\?v=(.{11})', html_content.read().decode())
-	random_song=random.randint(0,10)
+	search_results = re.findall(r"watch\?v=(\S{11})", html_content.read().decode())
+	number_songs = len(search_results)
+	random_song=random.randint(0,number_songs)
 	media = search_results[random_song]
 #	hass.states.set('youtube.info', media, key_word)	
 	return media

@@ -1,20 +1,25 @@
-play:
-  # Description of the service
-  description: Play ZingMP3 top 100.
-  # Different fields that your service accepts
+play_top100:
+  description: Play top 100 on Zing MP3
   fields:
-    # Key of the field
     entity_id:
-      # Description of the field
-      description: Name(s) of the entities to set
-      # Example value that can be passed for this field
-      example: 'media_player.speaker'
-    music_type:
-      description: 'List music_type: Pop, Country, Rock, Dance, R&B, Rap, Soundtrack, Nhac tre, Tru tinh, Que huong, Cach mang, Rock Viet, Rap Viet, Dance Viet'
+      description: Name of the media_player to play
+      example: 'media_player.bedroom_speaker'
+    category:
+      description: 'Pop(default), Country, Rock, Dance, R&B, Rap, Soundtrack, Nhac tre, Tru tinh, Que huong, Cach mang, Rock Viet, Rap Viet, Dance Viet'
       example: 'Nhac tre'
     repeat:
-      description: "optional, default: 'off'"
-      example: 'off'
-    shuffle: 
-      description: "optional, default: 'off'"
-      example: 'on'
+      description: Repeat when completed. Default is false
+      example: true
+    shuffle:
+      description: Shuffle song in playlist. Default is false
+      example: true
+
+play:
+  description: Search and play song on Zing MP3
+  fields:
+    entity_id:
+      description: media player to play
+      example: 'media_player.bedroom_speaker'
+    name:
+      description: Song name to play
+      example: 'happy new year'
