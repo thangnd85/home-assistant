@@ -4,6 +4,8 @@
   "documentation": "https://www.example.com",
   "dependencies": [],
   "codeowners": ["@thangnd85"],
-  "requirements": []
-  "version": "1.1"
+  "issue_tracker": "https://github.com/thangnd85/home-assistant/issues",
+  "requirements": [],
+   "version": "1.2",
+  "config_flow": false
 }
