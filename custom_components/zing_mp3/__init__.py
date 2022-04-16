@@ -179,12 +179,8 @@ def setup(hass, config):
         realURLdata = requests.get(mp3Source,allow_redirects=False)
         # print(realURLdata)
         realURL = realURLdata.headers['Location']
-        file_name, headers = urlretrieve(realURL)
-        print(realURL)
-        result=file_name            
-    except (IndexError, ValueError):
-        pass        
-    return realURL
+ 
+        return realURL
     
     
     
