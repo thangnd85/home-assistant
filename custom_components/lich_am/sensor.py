@@ -26,7 +26,7 @@ import homeassistant.helpers.config_validation as cv
 _LOGGER = logging.getLogger(__name__)
 
 CONF_DELIMITER = 'delimiter' 
-SCAN_INTERVAL = datetime.timedelta(seconds=600)
+SCAN_INTERVAL = datetime.timedelta(seconds=300)
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_DELIMITER, default= '/'): cv.string,
@@ -34,68 +34,55 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
     delimiter = config.get(CONF_DELIMITER)
-    add_devices([lunar_calendar(delimiter),lunar_calendar_date(delimiter),lunar_calendar_nextday(delimiter)])
-
+    add_devices([lunar_calendar(delimiter),lunar_calendar_text(delimiter),lunar_calendar_nextday(delimiter),lunar_calendar_nextdate(delimiter)])
 
 class lunar_calendar(Entity):
-
-    def __init__(self, delimiter):
-        self._name = 'Lịch âm'
-        self._state = None
-        self._delimiter = delimiter
-        self._description = 'Âm lịch @ Hồ Ngọc Đức'
-        self.update()
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def state(self):
-        return self._state
-		
-    @property
-    def icon(self):
-        """Return the icon of the sensor"""
-        return 'mdi:calendar'
-		
-    @property
-    def device_state_attributes(self):
-        return {'Thông tin': self._description}
-
-    @Throttle(SCAN_INTERVAL)
-    def update(self):
-        self._state = solar2lunar(self._delimiter)
-class lunar_calendar_date(Entity):
-
     def __init__(self, delimiter):
         self._name = 'Ngày âm'
         self._state = None
         self._delimiter = delimiter
         self._description = 'Âm lịch @ Hồ Ngọc Đức'
         self.update()
-
     @property
     def name(self):
         return self._name
-
     @property
     def state(self):
         return self._state
-		
     @property
     def icon(self):
         """Return the icon of the sensor"""
         return 'mdi:calendar'
-		
     @property
     def device_state_attributes(self):
         return {'Thông tin': self._description}
-
     @Throttle(SCAN_INTERVAL)
     def update(self):
-        self._state = solar2lunar_date(self._delimiter)
-class lunar_calendar_nextday(Entity):
+        self._state = solar2lunar(self._delimiter)[0]
+class lunar_calendar_text(Entity):
+    def __init__(self, delimiter):
+        self._name = 'Hôm nay'
+        self._state = None
+        self._delimiter = delimiter
+        self._description = 'Âm lịch @ Hồ Ngọc Đức'
+        self.update()
+    @property
+    def name(self):
+        return self._name
+    @property
+    def state(self):
+        return self._state
+    @property
+    def icon(self):
+        """Return the icon of the sensor"""
+        return 'mdi:calendar'
+    @property
+    def device_state_attributes(self):
+        return {'Thông tin': self._description}
+    @Throttle(SCAN_INTERVAL)
+    def update(self):
+        self._state = solar2lunar(self._delimiter)[1]
+class lunar_calendar_nextdate(Entity):
 
     def __init__(self, delimiter):
         self._name = 'Âm lịch ngày mai'
@@ -103,6 +90,34 @@ class lunar_calendar_nextday(Entity):
         self._delimiter = delimiter
         self._description = 'Âm lịch @ Hồ Ngọc Đức'
         self.update()
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def state(self):
+        return self._state
+		
+    @property
+    def icon(self):
+        """Return the icon of the sensor"""
+        return 'mdi:calendar'
+		
+    @property
+    def device_state_attributes(self):
+        return {'Thông tin': self._description}
+
+    @Throttle(SCAN_INTERVAL)
+    def update(self):
+        self._state = solar2lunar(self._delimiter)[2]
+class lunar_calendar_nextday(Entity):
+
+    def __init__(self, delimiter):
+        self._name = 'Ngày mai'
+        self._state = None
+        self._delimiter = delimiter
+        self._description = 'Âm lịch @ Hồ Ngọc Đức'
+        self.update()
 
     @property
     def name(self):
@@ -123,68 +138,80 @@ class lunar_calendar_nextday(Entity):
 
     @Throttle(SCAN_INTERVAL)
     def update(self):
-        self._state = solar2lunar_nextday(self._delimiter)
-
+        self._state = solar2lunar(self._delimiter)[3]
+def today():
+    a = 'Hôm nay'
+    #print ('âm lịch hôm nay')
+    ngay = datetime.date.today()
+    yy,mm, dd = ngay.year, ngay.month, ngay.day 
+    amlich = [a,yy,mm,dd]
+    return amlich,ngay
+def tomorrow():
+    #print ('Âm lịch ngày mai')
+    a = 'Ngày mai'
+    ngay = datetime.date.today() + timedelta(1)
+    yy,mm, dd = ngay.year, ngay.month, ngay.day 
+    amlich = [a,yy,mm,dd]
+    return amlich,ngay
 def solar2lunar(_delimiter):
         today = datetime.date.today()
         yy =  today.year
         mm = today.month
         dd = today.day
-        lunar_date = S2L(dd, mm, yy)
-        ngay_am = str(lunar_date[0])
-        list_thang = ["tháng Giêng","tháng Hai","tháng Ba","tháng Tư","tháng Năm","tháng Sáu","tháng Bảy","tháng Tám","tháng Chín","tháng Mười","tháng Mười một","tháng Chạp"]
-        thang_am = int(str(lunar_date[1]))-1
-        thang_am = list_thang[thang_am]
-        can = ['Canh ', 'Tân ', 'Nhâm ', 'Quý ', 'Giáp ', 'Ất ', 'Bính ', 'Đinh ','Mậu ','Kỷ ']
-        chi = ['Thân', 'Dậu', 'Tuất', 'Hợi','Tí','Sửu','Dần', 'Mão', 'Thìn', 'Tị', 'Ngọ', "Mùi"]
-        nam = int(str(lunar_date[2]))
-        vitri_can = nam % 10
-        vitri_chi = nam % 12
-        nam_am = str(lunar_date[2])
-        lunar_text2 = 'Ngày ' + str(lunar_date[0]) + ', ' + thang_am  + ', năm '  + can[vitri_can] + chi[vitri_chi] + ' (' +  str(lunar_date[2]) +')'
-        lunar_text = str(lunar_date[0]) + str(_delimiter) + str(lunar_date[1])
-        return lunar_text #Hiện chữ
-#        return lunar_text #Hiện ngày
-def solar2lunar_date(_delimiter):
-        today = datetime.date.today()
-        yy =  today.year
-        mm = today.month
-        dd = today.day
-        lunar_date = S2L(dd, mm, yy)
-        ngay_am = str(lunar_date[0])
-        list_thang = ["tháng Giêng","tháng Hai","tháng Ba","tháng Tư","tháng Năm","tháng Sáu","tháng Bảy","tháng Tám","tháng Chín","tháng Mười","tháng Mười một","tháng Chạp"]
-        thang_am = int(str(lunar_date[1]))-1
-        thang_am = list_thang[thang_am]
-        can = ['Canh ', 'Tân ', 'Nhâm ', 'Quý ', 'Giáp ', 'Ất ', 'Bính ', 'Đinh ','Mậu ','Kỷ ']
-        chi = ['Thân', 'Dậu', 'Tuất', 'Hợi','Tí','Sửu','Dần', 'Mão', 'Thìn', 'Tị', 'Ngọ', "Mùi"]
-        nam = int(str(lunar_date[2]))
-        vitri_can = nam % 10
-        vitri_chi = nam % 12
-        nam_am = str(lunar_date[2])
-        lunar_text2 = 'Ngày ' + str(lunar_date[0]) + ', ' + thang_am  + ', năm '  + can[vitri_can] + chi[vitri_chi] + ' (' +  str(lunar_date[2]) +')'
-        lunar_text = str(lunar_date[0])
-        return lunar_text #Hiện chữ
-#        return lunar_text #Hiện ngày
-def solar2lunar_nextday(_delimiter):
-        today = datetime.date.today()
         tmr = today + datetime.timedelta(1)
-        yy =  tmr.year
-        mm = tmr.month
-        dd = tmr.day
+        yy_tmr = tmr.year
+        mm_tmr = tmr.month
+        dd_tmr = tmr.day
         lunar_date = S2L(dd, mm, yy)
-        ngay_am = str(lunar_date[0])
+        lunar_date_tmr = S2L(dd_tmr, mm_tmr, yy_tmr)
+        ngay_am,thang_am,nam_am,nam_nhuan = lunar_date
+        ngay_am_sau,thang_am_sau,nam_am_sau,nam_nhuan = lunar_date_tmr
+        mung = 'mùng ' if ngay_am < 11 else ''
+        special = 'rằm ' if ngay_am == 15 else ''
+        ngay_am_text = ' '.join([mung,special,str(ngay_am)])
+        mung_sau = 'mùng ' if ngay_am_sau < 11 else ''
+        special_sau = 'rằm ' if ngay_am_sau == 15 else ''
+        ngay_am_text_sau = ' '.join([mung_sau,special_sau,str(ngay_am_sau)])
+        counter = ''
+        if ngay_am < 14:
+            days_left = 15 - ngay_am
+            counter =' '.join([', còn',str(days_left),' ngày nữa thì đến rằm'])
+        elif ngay_am == 14:
+            counter ='ngày mai rằm nhé'
+        else:
+            if thang_am < 12:
+                nam_a = nam_am
+                thang_sau = thang_am + 1
+            else:
+                thang_sau = 1
+                nam_a = nam_am + 1
+                nd,td,nmd = L2S(28,12,yy,nam_nhuan)
+                daa = '-'.join([str(nd),str(td),str(nmd)])
+                a2dnew = datetime.datetime.strptime(daa, '%d-%m-%Y').date()
+                ngaytet, thangtet, namtet= a2dnew.day, a2dnew.month, a2dnew.year
+                nammoi = S2L(ngaytet,thangtet,namtet)
+                nam_nhuan = nammoi[3]
+            nd,td,nmd  = L2S(1,thang_sau,nam_a,nam_nhuan)
+            daa = '-'.join([str(nd),str(td),str(nmd)])
+            a2dnew = datetime.datetime.strptime(daa, '%d-%m-%Y').date()
+            ngay_mai = tomorrow()[1]
+            delta = a2dnew - ngay_mai
+            days_left = delta.days
+            counter =' '.join([', còn',str(days_left),'ngày nữa thì đến mùng 1'])
         list_thang = ["tháng Giêng","tháng Hai","tháng Ba","tháng Tư","tháng Năm","tháng Sáu","tháng Bảy","tháng Tám","tháng Chín","tháng Mười","tháng Mười một","tháng Chạp"]
-        thang_am = int(str(lunar_date[1]))-1
-        thang_am = list_thang[thang_am]
+        thang_nay_text = list_thang[thang_am-1]
+        thang_sau_text = list_thang[thang_am_sau-1]
         can = ['Canh ', 'Tân ', 'Nhâm ', 'Quý ', 'Giáp ', 'Ất ', 'Bính ', 'Đinh ','Mậu ','Kỷ ']
         chi = ['Thân', 'Dậu', 'Tuất', 'Hợi','Tí','Sửu','Dần', 'Mão', 'Thìn', 'Tị', 'Ngọ', "Mùi"]
-        nam = int(str(lunar_date[2]))
-        vitri_can = nam % 10
-        vitri_chi = nam % 12
-        nam_am = str(lunar_date[2])
-        lunar_text2 = 'Ngày ' + str(lunar_date[0]) + ', ' + thang_am  + ', năm '  + can[vitri_can] + chi[vitri_chi] + ' (' +  str(lunar_date[2]) +')'
-        lunar_text = str(lunar_date[0])
-        return lunar_text #Hiện chữ
+        vitri_can = nam_am % 10
+        vitri_chi = nam_am % 12
+        vitri_can_sau = nam_am_sau % 10
+        vitri_chi_sau = nam_am_sau % 12
+        lunar_text = ' '.join(['Ngày',ngay_am_text,thang_nay_text,'năm',can[vitri_can],chi[vitri_chi]])
+        lunar_date = ngay_am
+        lunar_text_sau = ' '.join(['Ngày',ngay_am_text_sau,thang_sau_text,'năm',can[vitri_can_sau],chi[vitri_chi_sau],str(nam_am_sau),counter])
+        lunar_date_sau = ngay_am_sau
+        return lunar_date, lunar_text, lunar_date_sau, lunar_text_sau #Hiện chữ
 #        return lunar_text #Hiện ngày
 
 ''' Thuật toán tính âm lịch
@@ -363,6 +390,32 @@ def S2L(dd, mm, yy, timeZone = 7):
     lunarYear -= 1
   return \
       [ lunarDay, lunarMonth, lunarYear, lunarLeap ]
+def L2S(lunarD, lunarM, lunarY, lunarLeap, tZ = 7):
+  '''def L2S(lunarD, lunarM, lunarY, lunarLeap, tZ = 7): Convert a lunar date to the corresponding solar date.'''
+  if (lunarM < 11):
+    a11 = getLunarMonth11(lunarY - 1, tZ)
+    b11 = getLunarMonth11(lunarY, tZ)
+  else:
+    a11 = getLunarMonth11(lunarY, tZ)
+    b11 = getLunarMonth11(lunarY + 1, tZ)
+  k = int(0.5 + \
+              (a11 - 2415021.076998695) / 29.530588853)
+  off = lunarM - 11
+  if (off < 0):
+    off += 12
+  if (b11 - a11 > 365):
+    leapOff = getLeapMonthOffset(a11, tZ)
+    leapM = leapOff - 2
+    if (leapM < 0):
+      leapM += 12
+    if (lunarLeap != 0 and lunarM != leapM):
+      return [0, 0, 0]
+    elif (lunarLeap != 0 or off >= leapOff):
+      off += 1
+  monthStart = getNewMoonDay(k + off, tZ)
+  return jdToDate(monthStart + lunarD - 1)
+
+''' end function calendar '''    
 ''' end function calendar '''
 
 
