@@ -1,11 +1,10 @@
 {
   "domain": "lich_am",
-  "name": "Âm lịch",
-  "documentation": "https://www.example.com",
-  "dependencies": [],
-  "codeowners": ["@thangnd85"],
-  "issue_tracker": "https://github.com/thangnd85/home-assistant/issues",
-  "requirements": [],
-   "version": "1.2",
-  "config_flow": false
+  "name": "Lịch Âm Việt Nam",
+  "codeowners": [],
+  "documentation": "https://github.com/gemini/ha-lich-am",
+  "iot_class": "local_polling",
+  "version": "2.1.0",
+  "config_flow": true,
+  "requirements": []
 }
