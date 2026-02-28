@@ -8,6 +8,7 @@ import base64
 import urllib.parse
 import threading
 import logging
+import math
 import paho.mqtt.client as mqtt
 
 from .const import (
@@ -26,13 +27,17 @@ class VinFastAPI:
         self.user_id = None
         self.vehicle_name = vehicle_name
         self.client = None
-        self.callbacks = []  # Danh sách các hàm chờ nhận dữ liệu
+        self.callbacks = []
+        self._last_data = {}  # CƠ CHẾ MỚI: Lưu trữ dữ liệu cuối cùng
         self._mqtt_started = False
         self._polling_thread = None
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
             self.callbacks.append(cb)
+            # Nếu Sensor vào muộn, ném ngay dữ liệu đã lưu cho nó
+            if self._last_data:
+                cb(self._last_data)
 
     def login(self):
         url = f"https://{AUTH0_DOMAIN}/oauth/token"
@@ -82,47 +87,100 @@ class VinFastAPI:
         try:
             if not self.user_id: self.get_vehicles()
             method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
-            url = f"{API_BASE}/{api_path}?page=0&size=1000"
-            ts = int(time.time() * 1000)
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "x-vin-code": self.vin,
-                "x-service-name": "CAPP",
-                "x-app-version": "2.17.5",
-                "x-device-platform": "android",
-                "x-device-identifier": DEVICE_ID,
-                "Content-Type": "application/json",
-                "x-player-identifier": self.user_id,
-                "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
-                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
-                "X-TIMESTAMP": str(ts)
-            }
-            res = requests.post(url, headers=headers, json={"orderStatus": [3, 5, 7]})
             
-            if res.status_code == 401:
-                self.login()
-                headers["Authorization"] = f"Bearer {self.access_token}"
+            all_sessions = []
+            page = 0
+            size = 100
+            total_pages = 1
+            
+            while page < total_pages:
+                url = f"{API_BASE}/{api_path}?page={page}&size={size}"
+                ts = int(time.time() * 1000)
+                headers = {
+                    "Authorization": f"Bearer {self.access_token}",
+                    "x-vin-code": self.vin,
+                    "x-service-name": "CAPP",
+                    "x-app-version": "2.17.5",
+                    "x-device-platform": "android",
+                    "x-device-identifier": DEVICE_ID,
+                    "Content-Type": "application/json",
+                    "x-player-identifier": self.user_id,
+                    "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
+                    "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
+                    "X-TIMESTAMP": str(ts)
+                }
                 res = requests.post(url, headers=headers, json={"orderStatus": [3, 5, 7]})
-            
-            if res.status_code != 200: return
                 
-            data = res.json()
-            raw_data = data.get("data")
-            sessions = raw_data if isinstance(raw_data, list) else (raw_data.get("content", []) if isinstance(raw_data, dict) else [])
+                if res.status_code == 401:
+                    self.login()
+                    headers["Authorization"] = f"Bearer {self.access_token}"
+                    res = requests.post(url, headers=headers, json={"orderStatus": [3, 5, 7]})
+                
+                if res.status_code != 200: 
+                    break
+                    
+                data = res.json()
+                
+                sessions = []
+                raw_data = data.get("data")
+                if isinstance(raw_data, list):
+                    sessions = raw_data
+                elif isinstance(raw_data, dict) and "content" in raw_data:
+                    sessions = raw_data["content"]
+                elif "content" in data and isinstance(data["content"], list):
+                    sessions = data["content"]
+                    
+                all_sessions.extend(sessions)
+                
+                if page == 0:
+                    meta = data.get("metadata", {})
+                    if not meta and isinstance(data.get("data"), dict):
+                        meta = data.get("data", {}).get("metadata", {})
+                        
+                    total_records = (
+                        meta.get("totalRecords") or 
+                        meta.get("totalElements") or 
+                        (data.get("data", {}).get("totalElements") if isinstance(data.get("data"), dict) else None) or 
+                        len(sessions)
+                    )
+                    
+                    if total_records > 0:
+                        total_pages = math.ceil(total_records / size)
+                
+                page += 1
+                
+            unique_sessions = {}
+            for s in all_sessions:
+                s_id = s.get("id") or f"noid_{s.get('pluggedTime') or s.get('startChargeTime') or s.get('createdDate')}"
+                unique_sessions[s_id] = s
+                
+            t_sessions = 0
+            t_kwh = 0.0
+            t_cost = 0.0
             
-            t_sessions = sum(1 for s in sessions if float(s.get("totalKWCharged", 0)) > 0)
-            t_kwh = sum(float(s.get("totalKWCharged", 0)) for s in sessions)
-            t_cost = sum(float(s.get("finalAmount", 0)) for s in sessions if float(s.get("totalKWCharged", 0)) > 0)
+            for s in unique_sessions.values():
+                kwh = float(s.get("totalKWCharged", 0))
+                if kwh > 0:
+                    t_sessions += 1
+                    t_kwh += kwh
+                    t_cost += float(s.get("finalAmount", 0))
 
-            # Phân phát cho tất cả các nền tảng đang lắng nghe
+            _LOGGER.info(f"VinFast: Lấy thành công {t_sessions} lần sạc, {round(t_kwh, 2)} kWh.")
+
+            # Lưu vào bộ nhớ đệm
+            new_data = {
+                "api_total_charge_sessions": t_sessions,
+                "api_total_energy_charged": round(t_kwh, 2),
+                "api_total_charge_cost": round(t_cost, 0)
+            }
+            self._last_data.update(new_data)
+
+            # Phân phát dữ liệu
             if self.callbacks:
                 for cb in self.callbacks:
-                    cb({
-                        "api_total_charge_sessions": t_sessions,
-                        "api_total_energy_charged": round(t_kwh, 2),
-                        "api_total_charge_cost": round(t_cost, 0)
-                    })
-        except Exception as e: _LOGGER.error(f"Lỗi lấy lịch sử sạc: {e}")
+                    cb(new_data)
+        except Exception as e: 
+            _LOGGER.error(f"Lỗi lấy lịch sử sạc VinFast: {e}")
 
     def _api_polling_loop(self):
         while True:
@@ -176,9 +234,13 @@ class VinFastAPI:
                 if key and val is not None:
                     data_dict[key] = val
             
-            # Đẩy dữ liệu cho Map và Sensor
-            if data_dict and self.callbacks:
-                for cb in self.callbacks:
-                    cb(data_dict)
+            if data_dict:
+                # Lưu vào bộ nhớ đệm
+                self._last_data.update(data_dict)
+                
+                # Phân phát dữ liệu
+                if self.callbacks:
+                    for cb in self.callbacks:
+                        cb(data_dict)
         except Exception:
             pass
