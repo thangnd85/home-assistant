@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Đăng nhập tài khoản VinFast",
+        "description": "Vui lòng nhập Email và Mật khẩu bạn dùng trên app VinFast.",
+        "data": {
+          "email": "Email",
+          "password": "Mật khẩu"
+        }
+      },
+      "select_vehicle": {
+        "title": "Chọn xe của bạn",
+        "description": "Chúng tôi đã tìm thấy xe trong tài khoản của bạn. Vui lòng chọn chiếc xe bạn muốn tích hợp.",
+        "data": {
+          "vin": "Danh sách xe"
+        }
+      }
+    },
+    "error": {
+      "auth_error": "Sai Email hoặc Mật khẩu, hoặc lỗi kết nối đến máy chủ VinFast.",
+      "no_vehicles": "Không tìm thấy chiếc xe nào trong tài khoản này."
+    },
+    "abort": {
+      "already_configured": "Tài khoản này đã được cài đặt rồi."
+    }
+  }
+}

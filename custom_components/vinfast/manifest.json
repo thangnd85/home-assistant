@@ -1,0 +1,14 @@
+{
+  "domain": "vinfast",
+  "name": "VinFast Connected Car",
+  "codeowners": ["@vfdashboard"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/VF9-Club/VFDashboard",
+  "iot_class": "cloud_push",
+  "requirements": [
+    "requests>=2.31.0",
+    "paho-mqtt>=1.6.1"
+  ],
+  "version": "1.0.0"
+}
