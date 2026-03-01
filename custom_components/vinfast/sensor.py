@@ -11,32 +11,30 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     api = hass.data[DOMAIN][config_entry.entry_id]["api"]
     sensors = []
     
-    # 1. Luôn nạp các cảm biến cơ bản
+    # 1. Luôn nạp các cảm biến dùng chung
     active_dict = BASE_SENSORS.copy()
     
-    # 2. Nhận diện dòng xe để nạp thêm Từ điển riêng
+    # 2. Nhận diện dòng xe để nạp Từ điển
     vehicle_name = str(api.vehicle_name).upper()
     
     if "VF 3" in vehicle_name or "VF3" in vehicle_name:
         active_dict.update(VF3_SENSORS)
-        _LOGGER.info("VinFast: Đã nhận diện xe VF 3. Đang nạp từ điển rút gọn.")
+        _LOGGER.info("VinFast: Đã nạp Từ điển chuẩn cho VF 3.")
         
     elif any(model in vehicle_name for model in ["VF 5", "VF5", "VF 6", "VF6", "VF 7", "VF7", "VFE34", "VF E34"]):
-        active_dict.update(VF567_SENSORS)
-        _LOGGER.info("VinFast: Đã nhận diện xe VF 5/6/7/e34. Đang nạp từ điển mở rộng.")
+        active_dict.update(VF3_SENSORS) # Lấy nền tảng VF3
+        active_dict.update(VF567_SENSORS) # Cộng thêm Cảm biến lốp, Kính sau
+        _LOGGER.info("VinFast: Đã nạp Từ điển mở rộng cho VF 5/6/7.")
         
     elif "VF 8" in vehicle_name or "VF8" in vehicle_name or "VF 9" in vehicle_name or "VF9" in vehicle_name:
         active_dict.update(VF89_SENSORS)
-        _LOGGER.info("VinFast: Đã nhận diện xe VF 8/9. Đang nạp từ điển nền tảng cũ.")
+        _LOGGER.info("VinFast: Đã nạp Từ điển cho VF 8/9.")
         
     else:
-        # Nếu xe lạ, nạp hết để tự động hứng cái nào có
-        _LOGGER.warning("VinFast: Dòng xe lạ, đang nạp toàn bộ từ điển để dự phòng.")
         active_dict.update(VF3_SENSORS)
         active_dict.update(VF567_SENSORS)
         active_dict.update(VF89_SENSORS)
 
-    # Lưu lại active_dict vào API để hàm Wake-up chỉ "đòi nợ" đúng những mã này
     api.active_sensor_dict = active_dict
     
     for device_key, info in active_dict.items():
@@ -80,11 +78,10 @@ class VinFastSensor(SensorEntity):
         if self._device_key in data:
             val = data[self._device_key]
             
-            # Formating tiền tệ
-            if self._device_key in ["api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
+            # --- XỬ LÝ FORMARTING HIỂN THỊ ---
+            if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
                 val = "{:,.0f}".format(float(val)).replace(",", ".")
 
-            # Xử lý đóng/mở
             elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00005_00050", "10351_00006_00050"]:
                 val = "Mở" if str(val) == "1" else "Đóng"
                 
@@ -107,12 +104,11 @@ class VinFastSensor(SensorEntity):
             elif self._device_key == "34186_00005_00004":
                 val = "Đang Nháy" if str(val) == "1" else "Tắt"
 
-            elif self._device_key in ["34205_00001_00001", "34206_00001_00001", "34186_00000_00001", "34186_00000_00002", "34185_00000_00000", "34224_00001_00003"]:
+            elif self._device_key in ["34205_00001_00001", "34206_00001_00001", "34186_00000_00001", "34186_00000_00002", "34185_00000_00000", "34224_00001_00003", "34193_00001_00010"]:
                 val = "Đang Bật" if str(val) == "1" else "Đã Tắt"
 
-            # Xử lý Cảm biến lốp TPMS chia cho 10 (Vì giá trị đẩy lên thường là kPa hoặc bị nhân 10)
             elif "Áp suất lốp" in self.name and val is not None and isinstance(val, (int, float)):
-                if float(val) > 10:  # Nếu là 240 kPa -> 2.4 bar
+                if float(val) > 10:  
                     val = round(float(val) / 100, 1)
 
             self._attr_native_value = val
