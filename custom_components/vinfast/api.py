@@ -14,20 +14,16 @@ import paho.mqtt.client as mqtt
 from .const import (
     AUTH0_DOMAIN, AUTH0_CLIENT_ID, API_BASE, 
     AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, 
-    BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS,
-    DEFAULT_COST_PER_KWH, DEFAULT_EV_KWH_PER_KM, 
-    DEFAULT_GAS_PRICE, DEFAULT_GAS_KM_PER_LITER
+    BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 def safe_float(val, default=0.0):
-    """Hàm bảo vệ vòng lặp không bị sập khi dữ liệu MQTT trả về None hoặc String lỗi"""
     try:
         if val is None or str(val).strip() == "": return default
         return float(val)
-    except (ValueError, TypeError):
-        return default
+    except (ValueError, TypeError): return default
 
 class VinFastAPI:
     def __init__(self, email, password, vin=None, vehicle_name="Xe VinFast", options=None):
@@ -37,39 +33,46 @@ class VinFastAPI:
         self.vin = vin
         self.user_id = None
         self.vehicle_name = vehicle_name
-        self.vehicle_model = "Unknown" # Sẽ dùng cái này để nhận diện xe chính xác 100%
+        self.vehicle_model_display = "Unknown" 
         self.options = options or {}
         self.client = None
         self.callbacks = []
         self._running = False
         self._polling_thread = None
         
-        # Khởi tạo mặc định để các cảm biến không bị "Chưa xác định" khi vừa bật HA
         self._last_data = {
-            "api_trip_distance": 0,
+            "api_vehicle_status": "Đang kết nối...",
+            "api_current_address": "Đang tải vị trí...",
+            "api_trip_distance": 0.0,
             "api_trip_charge_cost": 0,
             "api_trip_gas_cost": 0,
             "api_total_gas_cost": 0,
-            "api_total_charge_cost_est": 0
+            "api_total_charge_cost_est": 0,
+            "api_total_charge_sessions": 0,
+            "api_total_energy_charged": 0,
         }  
         
-        self.cost_per_kwh = safe_float(self.options.get("cost_per_kwh", DEFAULT_COST_PER_KWH), 4000)
-        self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", DEFAULT_EV_KWH_PER_KM), 0.12)
-        self.gas_price = safe_float(self.options.get("gas_price", DEFAULT_GAS_PRICE), 20000)
-        self.gas_km_per_liter = safe_float(self.options.get("gas_km_per_liter", DEFAULT_GAS_KM_PER_LITER), 25)
+        # Chống lỗi nhân với số 0 nếu Options trống
+        def get_opt(key, def_val):
+            val = self.options.get(key)
+            return float(val) if val is not None and float(val) > 0 else float(def_val)
+
+        self.cost_per_kwh = get_opt("cost_per_kwh", 4000)
+        self.ev_kwh_per_km = get_opt("ev_kwh_per_km", 0.12)
+        self.gas_price = get_opt("gas_price", 20000)
+        self.gas_km_per_liter = get_opt("gas_km_per_liter", 20.0)
 
         self._last_moved_time = time.time()
         self._is_moving = False
         self._trip_start_odo = None
-        self._last_gear = "1" # Gear 1 = Park
+        self._last_gear = "1"
         self._last_lat_lon = None
         self._last_address = "Đang tải vị trí..."
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
             self.callbacks.append(cb)
-            if self._last_data:
-                cb(self._last_data)
+            if self._last_data: cb(self._last_data)
 
     def stop(self):
         self._running = False
@@ -97,9 +100,25 @@ class VinFastAPI:
         if vehicles:
             v = vehicles[0]
             self.user_id = str(v.get("userId", ""))
-            if not self.vin: self.vin = v.get("vinCode")
-            # FIX LỖI 1: Bắt chuẩn Model xe để tránh trùng lặp cảm biến
-            self.vehicle_model = str(v.get("vehicleModel") or v.get("dmsVehicleModel") or "Unknown").upper()
+            if not self.vin: self.vin = v.get("vinCode", "")
+            self.vehicle_name = v.get("vehicleName") or "VinFast EV"
+            
+            # --- NHẬN DIỆN DÒNG XE THÔNG MINH ---
+            m_name = str(v.get("marketingName", "")).strip().upper()
+            d_model = str(v.get("dmsVehicleModel", "")).strip().upper()
+            v_model = str(v.get("vehicleModel", "")).strip().upper()
+            identity = f"{m_name} {d_model} {v_model} {str(self.vin).upper()}"
+            
+            if "VF 3" in identity or "VF3" in identity or "VBL9" in identity:
+                self.vehicle_model_display = "VF 3"
+            elif "VF 5" in identity or "VF5" in identity:
+                self.vehicle_model_display = "VF 5"
+            elif "VF 8" in identity or "VF8" in identity:
+                self.vehicle_model_display = "VF 8"
+            elif "VF 9" in identity or "VF9" in identity:
+                self.vehicle_model_display = "VF 9"
+            else:
+                self.vehicle_model_display = "Unknown"
         return vehicles
 
     def _generate_x_hash(self, method, api_path, vin, timestamp_ms, secret_key="Vinfast@2025"):
@@ -134,9 +153,8 @@ class VinFastAPI:
     def get_address_from_osm(self, lat, lon):
         try:
             url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
-            res = requests.get(url, headers={"User-Agent": "HomeAssistant-VinFast-Integration/1.0"}, timeout=5)
-            if res.status_code == 200:
-                return res.json().get("display_name", f"{lat}, {lon}")
+            res = requests.get(url, headers={"User-Agent": "HA-VinFast/1.0"}, timeout=5)
+            if res.status_code == 200: return res.json().get("display_name", f"{lat}, {lon}")
         except Exception: pass
         return f"{lat}, {lon}"
 
@@ -167,8 +185,7 @@ class VinFastAPI:
                 headers3 = self._get_base_headers()
                 headers3.update({"X-HASH": self._generate_x_hash("POST", lr_path_2, self.vin, ts3), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path_2, "POST", ts3), "X-TIMESTAMP": str(ts3)})
                 requests.post(f"{API_BASE}/{lr_path_2}", headers=headers3, json=payload)
-
-        except Exception as e: _LOGGER.error(f"VinFast Wakeup Error: {e}")
+        except Exception: pass
 
     def fetch_charging_history(self):
         try:
@@ -197,17 +214,15 @@ class VinFastAPI:
             unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in all_sessions}
             t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
             t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
-            t_cost = sum(safe_float(s.get("finalAmount", 0)) for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
-
-            self._last_data.update({
-                "api_total_charge_sessions": t_sessions,
-                "api_total_energy_charged": round(t_kwh, 2),
-                "api_total_charge_cost": round(t_cost, 0),
-                "api_total_charge_cost_est": round(t_kwh * self.cost_per_kwh, 0)
-            })
+            
+            # Thực thi toán học Tính Tiền Sạc
+            self._last_data["api_total_charge_sessions"] = t_sessions
+            self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
+            self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
+            
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
-        except Exception as e: _LOGGER.error(f"VinFast Charging Fetch Error: {e}")
+        except Exception: pass
 
     def _get_aws_mqtt_url(self):
         res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}})
@@ -233,7 +248,6 @@ class VinFastAPI:
         while self._running:
             try:
                 current_time = time.time()
-                
                 if self._is_moving: poll_interval = 60 
                 else:
                     if (current_time - self._last_moved_time) > 1800: poll_interval = 900 
@@ -255,7 +269,7 @@ class VinFastAPI:
                     self.client.reconnect()
                     counter = 0
 
-            except Exception as e: _LOGGER.error(f"VinFast Polling Loop Error: {e}")
+            except Exception: pass
             time.sleep(1)
             counter += 1
 
@@ -299,18 +313,17 @@ class VinFastAPI:
             if data_dict:
                 self._last_data.update(data_dict)
                 
-                # --- FIX LỖI 2: TOÁN HỌC AN TOÀN (SAFE FLOAT) ---
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
-                if speed == 0: speed = safe_float(data_dict.get("34188_00000_00000", self._last_data.get("34188_00000_00000", 0)))
-                
                 gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
-                if gear == "1": gear = str(data_dict.get("34187_00000_00000", self._last_data.get("34187_00000_00000", "1")))
                 
+                # Quét ODO từ MQTT (Dùng chung 2 mã để không bị sót)
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
-                if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
+                if odo == 0: 
+                    odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
                 
+                # Thực thi toán học Tính Tiền Xăng = (ODO / 20) * Giá xăng
                 if odo > 0 and self.gas_km_per_liter > 0:
-                    self._last_data["api_total_gas_cost"] = round(odo * (self.gas_price / self.gas_km_per_liter), 0)
+                    self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
                 self._is_moving = (speed > 0) or (gear not in ["1", 1]) 
                 if self._is_moving:
@@ -319,10 +332,8 @@ class VinFastAPI:
                 else:
                     self._last_data["api_vehicle_status"] = "Đang đỗ"
 
-                # --- FIX LOGIC TRIP: RESET KHI CHUYỂN TỪ P (1) SANG D (4) ---
                 if gear != "1" and self._last_gear == "1" and odo > 0:
-                    self._trip_start_odo = odo # Bắt đầu chuyến đi mới
-                
+                    self._trip_start_odo = odo 
                 self._last_gear = gear
 
                 if self._trip_start_odo is not None and odo >= self._trip_start_odo:
@@ -330,7 +341,7 @@ class VinFastAPI:
                     self._last_data["api_trip_distance"] = round(trip_dist, 1)
                     
                     if self.gas_km_per_liter > 0:
-                        self._last_data["api_trip_gas_cost"] = round(trip_dist * (self.gas_price / self.gas_km_per_liter), 0)
+                        self._last_data["api_trip_gas_cost"] = round((trip_dist / self.gas_km_per_liter) * self.gas_price, 0)
                     self._last_data["api_trip_charge_cost"] = round(trip_dist * self.ev_kwh_per_km * self.cost_per_kwh, 0)
 
                 lat = data_dict.get("00006_00001_00000")
@@ -344,4 +355,4 @@ class VinFastAPI:
 
                 if self.callbacks:
                     for cb in self.callbacks: cb(self._last_data)
-        except Exception as e: _LOGGER.error(f"VinFast MQTT Logic Error: {e}")
+        except Exception: pass
