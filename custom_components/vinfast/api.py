@@ -18,6 +18,11 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Thông số tính toán do người dùng định nghĩa
+COST_PER_KWH = 4000      # 4000 VNĐ / 1 kWh (Có thể sửa)
+GAS_PRICE_PER_LITER = 20000 # 20000 VNĐ / 1 Lít xăng
+GAS_KM_PER_LITER = 25    # 25 km / 1 Lít (Xe máy/Xe xăng nhỏ)
+
 class VinFastAPI:
     def __init__(self, email, password, vin=None, vehicle_name="Xe VinFast"):
         self.email = email
@@ -31,6 +36,13 @@ class VinFastAPI:
         self._last_data = {}  
         self._running = False
         self._polling_thread = None
+        
+        # --- SMART LOGIC VARIABLES ---
+        self._last_moved_time = time.time()
+        self._is_moving = False
+        self._trip_start_odo = None
+        self._last_lat_lon = None
+        self._last_address = "Đang tải vị trí..."
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
@@ -43,17 +55,13 @@ class VinFastAPI:
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()
-        _LOGGER.info("VinFast: Đã ngắt kết nối MQTT an toàn.")
 
     def login(self):
         url = f"https://{AUTH0_DOMAIN}/oauth/token"
         res = requests.post(url, json={
-            "client_id": AUTH0_CLIENT_ID,
-            "grant_type": "password",
-            "username": self.email,
-            "password": self.password,
-            "scope": "openid profile email offline_access",
-            "audience": API_BASE
+            "client_id": AUTH0_CLIENT_ID, "grant_type": "password",
+            "username": self.email, "password": self.password,
+            "scope": "openid profile email offline_access", "audience": API_BASE
         })
         res.raise_for_status()
         self.access_token = res.json()["access_token"]
@@ -61,19 +69,13 @@ class VinFastAPI:
 
     def get_vehicles(self):
         url = f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "x-service-name": "CAPP",
-            "x-app-version": "2.17.5",
-            "x-device-platform": "android"
-        }
+        headers = {"Authorization": f"Bearer {self.access_token}", "x-service-name": "CAPP", "x-app-version": "2.17.5", "x-device-platform": "android"}
         res = requests.get(url, headers=headers)
         res.raise_for_status()
         vehicles = res.json().get("data", [])
         if vehicles:
             self.user_id = str(vehicles[0].get("userId", ""))
-            if not self.vin:
-                self.vin = vehicles[0].get("vinCode")
+            if not self.vin: self.vin = vehicles[0].get("vinCode")
         return vehicles
 
     def _generate_x_hash(self, method, api_path, vin, timestamp_ms, secret_key="Vinfast@2025"):
@@ -91,14 +93,9 @@ class VinFastAPI:
 
     def _get_base_headers(self):
         return {
-            "Authorization": f"Bearer {self.access_token}",
-            "x-vin-code": self.vin,
-            "x-service-name": "CAPP",
-            "x-app-version": "2.17.5",
-            "x-device-platform": "android",
-            "x-device-identifier": DEVICE_ID,
-            "x-player-identifier": self.user_id,
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {self.access_token}", "x-vin-code": self.vin, "x-service-name": "CAPP",
+            "x-app-version": "2.17.5", "x-device-platform": "android", "x-device-identifier": DEVICE_ID,
+            "x-player-identifier": self.user_id, "Content-Type": "application/json"
         }
 
     def _register_device_trust(self):
@@ -106,101 +103,71 @@ class VinFastAPI:
             method, api_path = "PUT", "ccarusermgnt/api/v1/device-trust/fcm-token"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
-            headers.update({
-                "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
-                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
-                "X-TIMESTAMP": str(ts)
-            })
-            payload = {"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"}
-            res = requests.put(f"{API_BASE}/{api_path}", headers=headers, json=payload)
-            if res.status_code == 200:
-                _LOGGER.info("VinFast: Đã vượt rào 403 bằng FCM Token giả!")
+            headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
+            requests.put(f"{API_BASE}/{api_path}", headers=headers, json={"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"})
         except Exception: pass
 
-    def wake_up_vehicle(self):
-        """Giả lập quy trình CHUẨN của App: 1. Ping (Đánh thức) -> 2. List Resource (Đòi nợ)"""
+    def get_address_from_osm(self, lat, lon):
+        """Dịch Tọa độ thành Địa chỉ (Reverse Geocoding OpenStreetMap)"""
         try:
-            # --- BƯỚC 1: PING (Gọi T-Box dậy) ---
+            url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+            headers = {"User-Agent": "HomeAssistant-VinFast-Integration/1.0"}
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                return data.get("display_name", f"{lat}, {lon}")
+        except Exception as e:
+            _LOGGER.error(f"VinFast Geocoding Error: {e}")
+        return f"{lat}, {lon}"
+
+    def wake_up_vehicle(self):
+        try:
             ping_path = "ccaraccessmgmt/api/v1/telemetry/app/ping"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
-            headers.update({
-                "X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts),
-                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts),
-                "X-TIMESTAMP": str(ts)
-            })
+            headers.update({"X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts), "X-TIMESTAMP": str(ts)})
             requests.post(f"{API_BASE}/{ping_path}", headers=headers, json=[])
             
-            # --- BƯỚC 2: LIST RESOURCE (Ép xe nôn dữ liệu) ---
             payload = []
             for key in SENSOR_DICT.keys():
-                if "_" in key:
+                if "_" in key and not key.startswith("api_"):
                     parts = key.split("_")
                     if len(parts) == 3:
-                        payload.append({
-                            "objectId": str(int(parts[0])),
-                            "instanceId": str(int(parts[1])),
-                            "resourceId": str(int(parts[2]))
-                        })
+                        payload.append({"objectId": str(int(parts[0])), "instanceId": str(int(parts[1])), "resourceId": str(int(parts[2]))})
 
-            # URL ưu tiên cho xe nền tảng mới như VF3 (Có VIN trên đường dẫn)
             lr_path = f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource"
             ts2 = int(time.time() * 1000)
             headers2 = self._get_base_headers()
-            headers2.update({
-                "X-HASH": self._generate_x_hash("POST", lr_path, self.vin, ts2),
-                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path, "POST", ts2),
-                "X-TIMESTAMP": str(ts2)
-            })
+            headers2.update({"X-HASH": self._generate_x_hash("POST", lr_path, self.vin, ts2), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path, "POST", ts2), "X-TIMESTAMP": str(ts2)})
             res = requests.post(f"{API_BASE}/{lr_path}", headers=headers2, json=payload)
 
-            # Fallback: Nếu lỗi 404, lùi về URL cũ (Dùng cho VF8/VF9)
             if res.status_code == 404:
                 lr_path_2 = "ccaraccessmgmt/api/v1/telemetry/list_resource"
                 ts3 = int(time.time() * 1000)
                 headers3 = self._get_base_headers()
-                headers3.update({
-                    "X-HASH": self._generate_x_hash("POST", lr_path_2, self.vin, ts3),
-                    "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path_2, "POST", ts3),
-                    "X-TIMESTAMP": str(ts3)
-                })
+                headers3.update({"X-HASH": self._generate_x_hash("POST", lr_path_2, self.vin, ts3), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path_2, "POST", ts3), "X-TIMESTAMP": str(ts3)})
                 res = requests.post(f"{API_BASE}/{lr_path_2}", headers=headers3, json=payload)
 
-            if res.status_code == 200:
-                _LOGGER.info(f"VinFast: Lệnh đòi nợ thành công! Đang đợi xe đẩy {len(payload)} thông số...")
-            elif res.status_code == 401:
-                self.login()
-            else:
-                _LOGGER.error(f"VinFast Lỗi List Resource: {res.status_code} - {res.text}")
-
-        except Exception as e:
-            _LOGGER.error(f"VinFast Wake-up Error: {e}")
+            if res.status_code == 401: self.login()
+        except Exception: pass
 
     def fetch_charging_history(self):
         try:
             method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
             all_sessions = []
             page, size, total_pages = 0, 100, 1
-            
             while page < total_pages and self._running:
                 ts = int(time.time() * 1000)
                 headers = self._get_base_headers()
-                headers.update({
-                    "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
-                    "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
-                    "X-TIMESTAMP": str(ts)
-                })
+                headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
                 res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json={"orderStatus": [3, 5, 7]})
-                
                 if res.status_code == 401:
                     self.login()
                     continue
                 if res.status_code != 200: break
-                    
                 data = res.json()
                 sessions = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("data", {}).get("content", []) if isinstance(data.get("data"), dict) else data.get("content", []))
                 all_sessions.extend(sessions)
-                
                 if page == 0:
                     meta = data.get("metadata", {})
                     if not meta and isinstance(data.get("data"), dict): meta = data.get("data", {}).get("metadata", {})
@@ -213,23 +180,22 @@ class VinFastAPI:
             t_kwh = sum(float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
             t_cost = sum(float(s.get("finalAmount", 0)) for s in unique_sessions.values() if float(s.get("totalKWCharged", 0)) > 0)
 
-            new_data = {
+            # Cập nhật thêm cảm biến tự tính toán
+            self._last_data.update({
                 "api_total_charge_sessions": t_sessions,
                 "api_total_energy_charged": round(t_kwh, 2),
-                "api_total_charge_cost": round(t_cost, 0)
-            }
-            self._last_data.update(new_data)
+                "api_total_charge_cost": round(t_cost, 0),
+                "api_charge_cost_est": round(t_kwh * COST_PER_KWH, 0)
+            })
             if self.callbacks:
-                for cb in self.callbacks: cb(new_data)
+                for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
         res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}})
         identity_id = res_id.json()["IdentityId"]
-
         creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}})
         creds = creds_res.json()["Credentials"]
-
         requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id})
 
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
@@ -243,20 +209,36 @@ class VinFastAPI:
         return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
 
     def _api_polling_loop(self):
+        """Vòng lặp thông minh: Tự điều chỉnh tần suất Ping (Dynamic Polling)"""
         counter = 0
+        last_ping_time = time.time() - 300 # Cho phép Ping ngay lần đầu
+        
         while self._running:
             try:
-                # Đợi đúng 3 giây sau khi code chạy để chắc chắn MQTT đã cắm rễ vào AWS, sau đó mới bắn lệnh
-                if counter == 3 or (counter > 0 and counter % 300 == 0):
-                    self.wake_up_vehicle()
+                current_time = time.time()
+                
+                # --- THUẬT TOÁN SMART SLEEP ---
+                if self._is_moving:
+                    poll_interval = 60 # Xe chạy: Ping mỗi 1 phút
+                else:
+                    time_since_moved = current_time - self._last_moved_time
+                    if time_since_moved > 1800: # Đỗ quá 30 phút
+                        poll_interval = 900 # Ping mỗi 15 phút (Bảo vệ ắc quy 12V)
+                    else:
+                        poll_interval = 300 # Vừa đỗ: Ping mỗi 5 phút
+                
+                # Bắn lệnh Ping theo nhịp Interval
+                if current_time - last_ping_time >= poll_interval:
+                    if self.client and self.client.is_connected():
+                        self.wake_up_vehicle()
+                        last_ping_time = current_time
 
-                # Quét API sạc ngay lúc đầu và lặp lại mỗi 60 phút
+                # Quét API sạc mỗi 60 phút
                 if counter == 0 or (counter > 0 and counter % 3600 == 0):
                     self.fetch_charging_history()
 
-                # Làm mới Token AWS mỗi 12 tiếng để chống rớt MQTT
+                # Refresh Token AWS mỗi 12 tiếng
                 if counter > 0 and counter % 43200 == 0:
-                    _LOGGER.info("VinFast: Làm mới kết nối MQTT (AWS Token Refresh)")
                     self.login()
                     self._register_device_trust()
                     new_url = self._get_aws_mqtt_url()
@@ -264,10 +246,9 @@ class VinFastAPI:
                     self.client.reconnect()
                     counter = 0
 
-            except Exception as e:
-                _LOGGER.error(f"VinFast Polling Error: {e}")
+            except Exception as e: pass
 
-            time.sleep(1) # Ngủ 1 giây để dễ dàng ngắt khi Tải lại (Reload)
+            time.sleep(1)
             counter += 1
 
     def start_mqtt(self):
@@ -278,7 +259,6 @@ class VinFastAPI:
         self._register_device_trust()
         
         wss_url = self._get_aws_mqtt_url()
-
         self.client = mqtt.Client(client_id=f"HA-VFDash-{int(time.time())}", transport="websockets", protocol=mqtt.MQTTv311)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
@@ -286,7 +266,6 @@ class VinFastAPI:
         self.client.ws_set_options(path=wss_url.split(IOT_ENDPOINT)[1])
         self.client.tls_set()
         
-        _LOGGER.info("VinFast: Đang kết nối MQTT...")
         self.client.connect(IOT_ENDPOINT, 443, 60)
         self.client.loop_start()
 
@@ -294,13 +273,10 @@ class VinFastAPI:
         self._polling_thread.start()
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            _LOGGER.info("VinFast: MQTT KẾT NỐI THÀNH CÔNG!")
-            client.subscribe(f"/mobile/{self.vin}/push", qos=1)
+        if rc == 0: client.subscribe(f"/mobile/{self.vin}/push", qos=1)
 
     def _on_disconnect(self, client, userdata, rc):
-        if rc != 0 and self._running:
-            _LOGGER.warning("VinFast: Mất kết nối MQTT. Đang tự động kết nối lại...")
+        if rc != 0 and self._running: pass
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -310,11 +286,47 @@ class VinFastAPI:
                 obj, inst, res = str(item.get("objectId", "0")).zfill(5), str(item.get("instanceId", "0")).zfill(5), str(item.get("resourceId", "0")).zfill(5)
                 key = item.get("deviceKey") if "deviceKey" in item else f"{obj}_{inst}_{res}"
                 val = item.get("value")
-                if key and val is not None:
-                    data_dict[key] = val
+                if key and val is not None: data_dict[key] = val
             
             if data_dict:
                 self._last_data.update(data_dict)
+                
+                # --- PHÂN TÍCH SMART SENSORS TỪ DỮ LIỆU THÔ ---
+                speed = float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0))) # VF3 Speed
+                gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) # VF3 Gear
+                odo = float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) # VF3 ODO
+                
+                # Cập nhật trạng thái Di chuyển
+                self._is_moving = (speed > 0) or (gear not in ["1", 1]) # Gear 1 là P
+                if self._is_moving:
+                    self._last_moved_time = time.time()
+                    self._last_data["api_vehicle_status"] = "Đang di chuyển"
+                else:
+                    self._last_data["api_vehicle_status"] = "Đang đỗ"
+
+                # Logic tính Trip: Bắt đầu khi vào D (4), kết thúc khi về P (1)
+                if gear == "4" and self._trip_start_odo is None:
+                    self._trip_start_odo = odo
+                elif gear == "1":
+                    pass # Giữ nguyên trip cũ khi về P để xem lại
+                
+                if self._trip_start_odo is not None and odo >= self._trip_start_odo:
+                    trip_dist = odo - self._trip_start_odo
+                    self._last_data["api_trip_distance"] = round(trip_dist, 1)
+                    # Tính chi phí xăng tương đương
+                    gas_liters = trip_dist / GAS_KM_PER_LITER
+                    self._last_data["api_gas_cost_saved"] = round(gas_liters * GAS_PRICE_PER_LITER, 0)
+
+                # Cập nhật Address từ Tọa độ
+                lat = data_dict.get("00006_00001_00000")
+                lon = data_dict.get("00006_00001_00001")
+                if lat and lon:
+                    curr_coord = f"{lat},{lon}"
+                    if curr_coord != self._last_lat_lon: # Chỉ gọi API nếu xe dịch chuyển
+                        self._last_lat_lon = curr_coord
+                        self._last_address = self.get_address_from_osm(lat, lon)
+                        self._last_data["api_current_address"] = self._last_address
+
                 if self.callbacks:
-                    for cb in self.callbacks: cb(data_dict)
+                    for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
