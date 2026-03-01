@@ -113,8 +113,10 @@ class VinFastAPI:
             _LOGGER.error(f"VinFast Trust Error: {e}")
 
     def wake_up_vehicle(self):
-        """Giả lập hành vi mở App VinFast để ép xe đẩy dữ liệu mới"""
+        """Giả lập App VinFast: Ép xe thức dậy và cập nhật TOÀN BỘ các cảm biến đang theo dõi"""
         try:
+            from .const import SENSOR_DICT
+            
             method, api_path = "POST", "ccaraccessmgmt/api/v1/telemetry/app/ping"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
@@ -123,9 +125,24 @@ class VinFastAPI:
                 "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
                 "X-TIMESTAMP": str(ts)
             })
-            res = requests.post(f"{API_BASE}/{api_path}", headers=headers, json=[])
+            
+            # Tự động trích xuất toàn bộ các mã đang có trong SENSOR_DICT để ép xe cập nhật
+            payload = []
+            for key in SENSOR_DICT.keys():
+                if "_" in key: # Chỉ lấy các mã MQTT (ví dụ: 34183_00001_00009)
+                    parts = key.split("_")
+                    if len(parts) == 3:
+                        payload.append({
+                            "objectId": str(int(parts[0])),
+                            "instanceId": str(int(parts[1])),
+                            "resourceId": str(int(parts[2]))
+                        })
+            
+            # Gửi gói Ping khổng lồ (Giống hệt cách App VinFast làm)
+            res = requests.post(f"{API_BASE}/{api_path}", headers=headers, json=payload)
+            
             if res.status_code == 200:
-                _LOGGER.debug("VinFast: Đã gửi lệnh Ping để làm mới dữ liệu.")
+                _LOGGER.info(f"VinFast: Đã bắn lệnh Wake-up yêu cầu {len(payload)} thông số. Chờ xe trả lời...")
             elif res.status_code == 401:
                 self.login()
         except Exception as e:
@@ -179,20 +196,20 @@ class VinFastAPI:
         except Exception as e: pass
 
     def _api_polling_loop(self):
-        """Vòng lặp ngầm: Ping xe mỗi 5 phút, Cập nhật lịch sử sạc mỗi 60 phút"""
-        self._register_device_trust()
+        """Vòng lặp ngầm của Home Assistant"""
+        self._register_device_trust() # Đăng ký token giả để vượt 403
         
         counter = 0
         while True:
-            self.wake_up_vehicle() # Gọi mỗi 5 phút
+            # 1. Ép xe cập nhật các thông số (Cửa, Pin, Tọa độ...) mỗi 5 phút
+            self.wake_up_vehicle() 
             
-            if counter % 12 == 0: # 12 * 5 phút = 60 phút
+            # 2. Quét lịch sử sạc mỗi 60 phút (Tránh gọi quá nhiều bị block)
+            if counter % 12 == 0: 
                 self.fetch_charging_history()
                 
             counter += 1
-            # Đợi 5 phút (300 giây). 
-            # ⚠️ LƯU Ý: Nếu xe báo hao bình 12V, bạn có thể tăng lên 900 giây (15 phút).
-            time.sleep(300) 
+            time.sleep(300) # Đợi 5 phút 
 
     def start_mqtt(self):
         if self._mqtt_started: return
