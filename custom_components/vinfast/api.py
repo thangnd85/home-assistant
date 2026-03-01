@@ -13,7 +13,7 @@ import paho.mqtt.client as mqtt
 
 from .const import (
     AUTH0_DOMAIN, AUTH0_CLIENT_ID, API_BASE, 
-    AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID
+    AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, SENSOR_DICT
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class VinFastAPI:
         self.client = None
         self.callbacks = []
         self._last_data = {}  
-        self._mqtt_started = False
+        self._running = False
         self._polling_thread = None
 
     def add_callback(self, cb):
@@ -37,6 +37,14 @@ class VinFastAPI:
             self.callbacks.append(cb)
             if self._last_data:
                 cb(self._last_data)
+
+    def stop(self):
+        """Hàm dọn dẹp để fix lỗi khi bấm Tải Lại trên Home Assistant"""
+        self._running = False
+        if self.client:
+            self.client.loop_stop()
+            self.client.disconnect()
+        _LOGGER.info("VinFast: Đã dọn dẹp sạch sẽ kết nối cũ.")
 
     def login(self):
         url = f"https://{AUTH0_DOMAIN}/oauth/token"
@@ -95,7 +103,6 @@ class VinFastAPI:
         }
 
     def _register_device_trust(self):
-        """Đăng ký thiết bị tin cậy bằng token giả để vượt lỗi 403"""
         try:
             method, api_path = "PUT", "ccarusermgnt/api/v1/device-trust/fcm-token"
             ts = int(time.time() * 1000)
@@ -108,15 +115,13 @@ class VinFastAPI:
             payload = {"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"}
             res = requests.put(f"{API_BASE}/{api_path}", headers=headers, json=payload)
             if res.status_code == 200:
-                _LOGGER.info("VinFast: Đã kích hoạt cơ chế giả lập App thành công.")
+                _LOGGER.debug("VinFast: Đã đăng ký thiết bị giả lập App thành công.")
         except Exception as e:
-            _LOGGER.error(f"VinFast Trust Error: {e}")
+            pass
 
     def wake_up_vehicle(self):
-        """Giả lập App VinFast: Ép xe thức dậy và cập nhật TOÀN BỘ các cảm biến đang theo dõi"""
+        """Giả lập App VinFast gửi ping để ép xe đẩy dữ liệu mới"""
         try:
-            from .const import SENSOR_DICT
-            
             method, api_path = "POST", "ccaraccessmgmt/api/v1/telemetry/app/ping"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
@@ -125,28 +130,15 @@ class VinFastAPI:
                 "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
                 "X-TIMESTAMP": str(ts)
             })
-            
-            # Tự động trích xuất toàn bộ các mã đang có trong SENSOR_DICT để ép xe cập nhật
-            payload = []
-            for key in SENSOR_DICT.keys():
-                if "_" in key: # Chỉ lấy các mã MQTT (ví dụ: 34183_00001_00009)
-                    parts = key.split("_")
-                    if len(parts) == 3:
-                        payload.append({
-                            "objectId": str(int(parts[0])),
-                            "instanceId": str(int(parts[1])),
-                            "resourceId": str(int(parts[2]))
-                        })
-            
-            # Gửi gói Ping khổng lồ (Giống hệt cách App VinFast làm)
-            res = requests.post(f"{API_BASE}/{api_path}", headers=headers, json=payload)
+            # Rút gọn payload thành mảng trống, tránh bị server chặn do danh sách quá dài
+            res = requests.post(f"{API_BASE}/{api_path}", headers=headers, json=[])
             
             if res.status_code == 200:
-                _LOGGER.info(f"VinFast: Đã bắn lệnh Wake-up yêu cầu {len(payload)} thông số. Chờ xe trả lời...")
+                _LOGGER.debug("VinFast: Đã gửi lệnh Ping làm mới dữ liệu.")
             elif res.status_code == 401:
                 self.login()
         except Exception as e:
-            _LOGGER.error(f"VinFast Wake-up Error: {e}")
+            pass
 
     def fetch_charging_history(self):
         try:
@@ -154,7 +146,7 @@ class VinFastAPI:
             all_sessions = []
             page, size, total_pages = 0, 100, 1
             
-            while page < total_pages:
+            while page < total_pages and self._running:
                 ts = int(time.time() * 1000)
                 headers = self._get_base_headers()
                 headers.update({
@@ -195,46 +187,69 @@ class VinFastAPI:
                 for cb in self.callbacks: cb(new_data)
         except Exception as e: pass
 
-    def _api_polling_loop(self):
-        """Vòng lặp ngầm của Home Assistant"""
-        self._register_device_trust() # Đăng ký token giả để vượt 403
-        
-        counter = 0
-        while True:
-            # 1. Ép xe cập nhật các thông số (Cửa, Pin, Tọa độ...) mỗi 5 phút
-            self.wake_up_vehicle() 
-            
-            # 2. Quét lịch sử sạc mỗi 60 phút (Tránh gọi quá nhiều bị block)
-            if counter % 12 == 0: 
-                self.fetch_charging_history()
-                
-            counter += 1
-            time.sleep(300) # Đợi 5 phút 
-
-    def start_mqtt(self):
-        if self._mqtt_started: return
-        self._mqtt_started = True
-        
-        if not self.user_id: self.get_vehicles()
-        
-        self._polling_thread = threading.Thread(target=self._api_polling_loop, daemon=True)
-        self._polling_thread.start()
-
+    def _get_aws_mqtt_url(self):
+        """Hàm sinh URL kết nối MQTT (được tách ra để tái sử dụng khi Auto-Reconnect)"""
         res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}})
-        creds = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": res_id.json()["IdentityId"], "Logins": {AUTH0_DOMAIN: self.access_token}}).json()["Credentials"]
-        requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": res_id.json()["IdentityId"]})
+        identity_id = res_id.json()["IdentityId"]
+
+        creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}})
+        creds = creds_res.json()["Credentials"]
+
+        requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id})
 
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
-        amz_date, date_stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ'), datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
+        amz_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        date_stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
         cred_scope = f"{date_stamp}/{AWS_REGION}/iotdevicegateway/aws4_request"
         qs = f"X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={urllib.parse.quote(creds['AccessKeyId'] + '/' + cred_scope, safe='')}&X-Amz-Date={amz_date}&X-Amz-Expires=86400&X-Amz-SignedHeaders=host"
         req = f"GET\n/mqtt\n{qs}\nhost:{IOT_ENDPOINT}\n\nhost\n" + hashlib.sha256("".encode('utf-8')).hexdigest()
         sts = f"AWS4-HMAC-SHA256\n{amz_date}\n{cred_scope}\n" + hashlib.sha256(req.encode('utf-8')).hexdigest()
         sig = hmac.new(sign(sign(sign(sign(('AWS4' + creds['SecretKey']).encode('utf-8'), date_stamp), AWS_REGION), 'iotdevicegateway'), 'aws4_request'), sts.encode('utf-8'), hashlib.sha256).hexdigest()
-        wss_url = f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
+        return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
+
+    def _api_polling_loop(self):
+        """Vòng lặp vĩnh cửu: Quản lý cả Ping và Reconnect"""
+        self._register_device_trust()
+        counter = 0
+        
+        while self._running:
+            try:
+                # 1. Ping xe mỗi 5 phút (300 giây)
+                if counter % 300 == 0:
+                    self.wake_up_vehicle()
+
+                # 2. Quét API lịch sử sạc mỗi 60 phút (3600 giây)
+                if counter > 0 and counter % 3600 == 0:
+                    self.fetch_charging_history()
+
+                # 3. LÀM MỚI TOKEN AWS MỖI 12 TIẾNG (Chống lỗi mất dữ liệu sau thời gian dài)
+                if counter > 0 and counter % 43200 == 0:
+                    _LOGGER.info("VinFast: Đang làm mới Token AWS IoT để duy trì kết nối 24/7...")
+                    self.login()
+                    self._register_device_trust()
+                    new_url = self._get_aws_mqtt_url()
+                    self.client.ws_set_options(path=new_url.split(IOT_ENDPOINT)[1])
+                    self.client.reconnect()
+                    counter = 0 # Reset bộ đếm
+
+            except Exception as e:
+                _LOGGER.error(f"VinFast Polling Loop Error: {e}")
+
+            # Ngủ thành từng nhịp 1 giây để Home Assistant có thể ngắt (Tải lại) lập tức khi cần
+            time.sleep(1)
+            counter += 1
+
+    def start_mqtt(self):
+        if self._running: return
+        self._running = True
+        
+        if not self.user_id: self.get_vehicles()
+        
+        wss_url = self._get_aws_mqtt_url()
 
         self.client = mqtt.Client(client_id=f"HA-VFDash-{int(time.time())}", transport="websockets", protocol=mqtt.MQTTv311)
         self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
         self.client.ws_set_options(path=wss_url.split(IOT_ENDPOINT)[1])
         self.client.tls_set()
@@ -243,9 +258,18 @@ class VinFastAPI:
         self.client.connect(IOT_ENDPOINT, 443, 60)
         self.client.loop_start()
 
+        # Khởi động luồng ngầm
+        self._polling_thread = threading.Thread(target=self._api_polling_loop, daemon=True)
+        self._polling_thread.start()
+
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
+            _LOGGER.info("VinFast: KẾT NỐI MQTT THÀNH CÔNG!")
             client.subscribe(f"/mobile/{self.vin}/push", qos=1)
+
+    def _on_disconnect(self, client, userdata, rc):
+        if rc != 0 and self._running:
+            _LOGGER.warning("VinFast: Mất kết nối MQTT đột ngột. Sẽ tự động kết nối lại...")
 
     def _on_message(self, client, userdata, msg):
         try:
