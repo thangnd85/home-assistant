@@ -28,14 +28,13 @@ class VinFastAPI:
         self.vehicle_name = vehicle_name
         self.client = None
         self.callbacks = []
-        self._last_data = {}  # CƠ CHẾ MỚI: Lưu trữ dữ liệu cuối cùng
+        self._last_data = {}  
         self._mqtt_started = False
         self._polling_thread = None
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
             self.callbacks.append(cb)
-            # Nếu Sensor vào muộn, ném ngay dữ liệu đã lưu cho nó
             if self._last_data:
                 cb(self._last_data)
 
@@ -83,114 +82,123 @@ class VinFastAPI:
         parts = [platform, vin_code, identifier, normalized_path, method, str(timestamp_ms)] if vin_code else [platform, identifier, normalized_path, method, str(timestamp_ms)]
         return base64.b64encode(hmac.new(hash2_key.encode('utf-8'), "_".join(parts).lower().encode('utf-8'), hashlib.sha256).digest()).decode('utf-8')
 
+    def _get_base_headers(self):
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "x-vin-code": self.vin,
+            "x-service-name": "CAPP",
+            "x-app-version": "2.17.5",
+            "x-device-platform": "android",
+            "x-device-identifier": DEVICE_ID,
+            "x-player-identifier": self.user_id,
+            "Content-Type": "application/json"
+        }
+
+    def _register_device_trust(self):
+        """Đăng ký thiết bị tin cậy bằng token giả để vượt lỗi 403"""
+        try:
+            method, api_path = "PUT", "ccarusermgnt/api/v1/device-trust/fcm-token"
+            ts = int(time.time() * 1000)
+            headers = self._get_base_headers()
+            headers.update({
+                "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
+                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
+                "X-TIMESTAMP": str(ts)
+            })
+            payload = {"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"}
+            res = requests.put(f"{API_BASE}/{api_path}", headers=headers, json=payload)
+            if res.status_code == 200:
+                _LOGGER.info("VinFast: Đã kích hoạt cơ chế giả lập App thành công.")
+        except Exception as e:
+            _LOGGER.error(f"VinFast Trust Error: {e}")
+
+    def wake_up_vehicle(self):
+        """Giả lập hành vi mở App VinFast để ép xe đẩy dữ liệu mới"""
+        try:
+            method, api_path = "POST", "ccaraccessmgmt/api/v1/telemetry/app/ping"
+            ts = int(time.time() * 1000)
+            headers = self._get_base_headers()
+            headers.update({
+                "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
+                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
+                "X-TIMESTAMP": str(ts)
+            })
+            res = requests.post(f"{API_BASE}/{api_path}", headers=headers, json=[])
+            if res.status_code == 200:
+                _LOGGER.debug("VinFast: Đã gửi lệnh Ping để làm mới dữ liệu.")
+            elif res.status_code == 401:
+                self.login()
+        except Exception as e:
+            _LOGGER.error(f"VinFast Wake-up Error: {e}")
+
     def fetch_charging_history(self):
         try:
-            if not self.user_id: self.get_vehicles()
             method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
-            
             all_sessions = []
-            page = 0
-            size = 100
-            total_pages = 1
+            page, size, total_pages = 0, 100, 1
             
             while page < total_pages:
-                url = f"{API_BASE}/{api_path}?page={page}&size={size}"
                 ts = int(time.time() * 1000)
-                headers = {
-                    "Authorization": f"Bearer {self.access_token}",
-                    "x-vin-code": self.vin,
-                    "x-service-name": "CAPP",
-                    "x-app-version": "2.17.5",
-                    "x-device-platform": "android",
-                    "x-device-identifier": DEVICE_ID,
-                    "Content-Type": "application/json",
-                    "x-player-identifier": self.user_id,
+                headers = self._get_base_headers()
+                headers.update({
                     "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts),
                     "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts),
                     "X-TIMESTAMP": str(ts)
-                }
-                res = requests.post(url, headers=headers, json={"orderStatus": [3, 5, 7]})
+                })
+                res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json={"orderStatus": [3, 5, 7]})
                 
                 if res.status_code == 401:
                     self.login()
-                    headers["Authorization"] = f"Bearer {self.access_token}"
-                    res = requests.post(url, headers=headers, json={"orderStatus": [3, 5, 7]})
-                
-                if res.status_code != 200: 
-                    break
+                    continue
+                if res.status_code != 200: break
                     
                 data = res.json()
-                
-                sessions = []
-                raw_data = data.get("data")
-                if isinstance(raw_data, list):
-                    sessions = raw_data
-                elif isinstance(raw_data, dict) and "content" in raw_data:
-                    sessions = raw_data["content"]
-                elif "content" in data and isinstance(data["content"], list):
-                    sessions = data["content"]
-                    
+                sessions = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("data", {}).get("content", []) if isinstance(data.get("data"), dict) else data.get("content", []))
                 all_sessions.extend(sessions)
                 
                 if page == 0:
                     meta = data.get("metadata", {})
-                    if not meta and isinstance(data.get("data"), dict):
-                        meta = data.get("data", {}).get("metadata", {})
-                        
-                    total_records = (
-                        meta.get("totalRecords") or 
-                        meta.get("totalElements") or 
-                        (data.get("data", {}).get("totalElements") if isinstance(data.get("data"), dict) else None) or 
-                        len(sessions)
-                    )
-                    
-                    if total_records > 0:
-                        total_pages = math.ceil(total_records / size)
-                
+                    if not meta and isinstance(data.get("data"), dict): meta = data.get("data", {}).get("metadata", {})
+                    total_records = meta.get("totalRecords") or len(sessions)
+                    if total_records > 0: total_pages = math.ceil(total_records / size)
                 page += 1
                 
-            unique_sessions = {}
-            for s in all_sessions:
-                s_id = s.get("id") or f"noid_{s.get('pluggedTime') or s.get('startChargeTime') or s.get('createdDate')}"
-                unique_sessions[s_id] = s
-                
-            t_sessions = 0
-            t_kwh = 0.0
-            t_cost = 0.0
-            
-            for s in unique_sessions.values():
-                kwh = float(s.get("totalKWCharged", 0))
-                if kwh > 0:
-                    t_sessions += 1
-                    t_kwh += kwh
-                    t_cost += float(s.get("finalAmount", 0))
+            unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in all_sessions}
+            t_sessions = sum(1 for s in unique_sessions.values() if float(s.get("totalKWCharged", 0)) > 0)
+            t_kwh = sum(float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
+            t_cost = sum(float(s.get("finalAmount", 0)) for s in unique_sessions.values() if float(s.get("totalKWCharged", 0)) > 0)
 
-            _LOGGER.info(f"VinFast: Lấy thành công {t_sessions} lần sạc, {round(t_kwh, 2)} kWh.")
-
-            # Lưu vào bộ nhớ đệm
             new_data = {
                 "api_total_charge_sessions": t_sessions,
                 "api_total_energy_charged": round(t_kwh, 2),
                 "api_total_charge_cost": round(t_cost, 0)
             }
             self._last_data.update(new_data)
-
-            # Phân phát dữ liệu
             if self.callbacks:
-                for cb in self.callbacks:
-                    cb(new_data)
-        except Exception as e: 
-            _LOGGER.error(f"Lỗi lấy lịch sử sạc VinFast: {e}")
+                for cb in self.callbacks: cb(new_data)
+        except Exception as e: pass
 
     def _api_polling_loop(self):
+        """Vòng lặp ngầm: Ping xe mỗi 5 phút, Cập nhật lịch sử sạc mỗi 60 phút"""
+        self._register_device_trust()
+        
+        counter = 0
         while True:
-            self.fetch_charging_history()
-            time.sleep(3600)
+            self.wake_up_vehicle() # Gọi mỗi 5 phút
+            
+            if counter % 12 == 0: # 12 * 5 phút = 60 phút
+                self.fetch_charging_history()
+                
+            counter += 1
+            # Đợi 5 phút (300 giây). 
+            # ⚠️ LƯU Ý: Nếu xe báo hao bình 12V, bạn có thể tăng lên 900 giây (15 phút).
+            time.sleep(300) 
 
     def start_mqtt(self):
-        if self._mqtt_started:
-            return
+        if self._mqtt_started: return
         self._mqtt_started = True
+        
+        if not self.user_id: self.get_vehicles()
         
         self._polling_thread = threading.Thread(target=self._api_polling_loop, daemon=True)
         self._polling_thread.start()
@@ -200,8 +208,7 @@ class VinFastAPI:
         requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": res_id.json()["IdentityId"]})
 
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
-        amz_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        date_stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
+        amz_date, date_stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ'), datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
         cred_scope = f"{date_stamp}/{AWS_REGION}/iotdevicegateway/aws4_request"
         qs = f"X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={urllib.parse.quote(creds['AccessKeyId'] + '/' + cred_scope, safe='')}&X-Amz-Date={amz_date}&X-Amz-Expires=86400&X-Amz-SignedHeaders=host"
         req = f"GET\n/mqtt\n{qs}\nhost:{IOT_ENDPOINT}\n\nhost\n" + hashlib.sha256("".encode('utf-8')).hexdigest()
@@ -235,12 +242,7 @@ class VinFastAPI:
                     data_dict[key] = val
             
             if data_dict:
-                # Lưu vào bộ nhớ đệm
                 self._last_data.update(data_dict)
-                
-                # Phân phát dữ liệu
                 if self.callbacks:
-                    for cb in self.callbacks:
-                        cb(data_dict)
-        except Exception:
-            pass
+                    for cb in self.callbacks: cb(data_dict)
+        except Exception: pass
