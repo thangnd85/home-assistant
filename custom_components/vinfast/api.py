@@ -13,31 +13,36 @@ import paho.mqtt.client as mqtt
 
 from .const import (
     AUTH0_DOMAIN, AUTH0_CLIENT_ID, API_BASE, 
-    AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, SENSOR_DICT
+    AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, 
+    BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS,
+    DEFAULT_COST_PER_KWH, DEFAULT_EV_KWH_PER_KM, 
+    DEFAULT_GAS_PRICE, DEFAULT_GAS_KM_PER_LITER
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Thông số tính toán do người dùng định nghĩa
-COST_PER_KWH = 4000      # 4000 VNĐ / 1 kWh (Có thể sửa)
-GAS_PRICE_PER_LITER = 20000 # 20000 VNĐ / 1 Lít xăng
-GAS_KM_PER_LITER = 25    # 25 km / 1 Lít (Xe máy/Xe xăng nhỏ)
-
 class VinFastAPI:
-    def __init__(self, email, password, vin=None, vehicle_name="Xe VinFast"):
+    def __init__(self, email, password, vin=None, vehicle_name="Xe VinFast", options=None):
         self.email = email
         self.password = password
         self.access_token = None
         self.vin = vin
         self.user_id = None
         self.vehicle_name = vehicle_name
+        self.options = options or {}
         self.client = None
         self.callbacks = []
         self._last_data = {}  
         self._running = False
         self._polling_thread = None
         
-        # --- SMART LOGIC VARIABLES ---
+        # --- THÔNG SỐ TÍNH TOÁN CHI PHÍ (Từ Options Flow) ---
+        self.cost_per_kwh = self.options.get("cost_per_kwh", DEFAULT_COST_PER_KWH)
+        self.ev_kwh_per_km = self.options.get("ev_kwh_per_km", DEFAULT_EV_KWH_PER_KM)
+        self.gas_price = self.options.get("gas_price", DEFAULT_GAS_PRICE)
+        self.gas_km_per_liter = self.options.get("gas_km_per_liter", DEFAULT_GAS_KM_PER_LITER)
+
+        # --- BIẾN KIỂM SOÁT THÔNG MINH ---
         self._last_moved_time = time.time()
         self._is_moving = False
         self._trip_start_odo = None
@@ -55,6 +60,7 @@ class VinFastAPI:
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()
+        _LOGGER.info("VinFast: Đã ngắt kết nối an toàn.")
 
     def login(self):
         url = f"https://{AUTH0_DOMAIN}/oauth/token"
@@ -99,6 +105,7 @@ class VinFastAPI:
         }
 
     def _register_device_trust(self):
+        """Giả lập mã FCM để vượt rào 403 của VinFast"""
         try:
             method, api_path = "PUT", "ccarusermgnt/api/v1/device-trust/fcm-token"
             ts = int(time.time() * 1000)
@@ -108,39 +115,41 @@ class VinFastAPI:
         except Exception: pass
 
     def get_address_from_osm(self, lat, lon):
-        """Dịch Tọa độ thành Địa chỉ (Reverse Geocoding OpenStreetMap)"""
+        """Dịch Tọa độ GPS thành Địa chỉ (Reverse Geocoding)"""
         try:
             url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
-            headers = {"User-Agent": "HomeAssistant-VinFast-Integration/1.0"}
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers={"User-Agent": "HomeAssistant-VinFast-Integration/1.0"}, timeout=5)
             if res.status_code == 200:
-                data = res.json()
-                return data.get("display_name", f"{lat}, {lon}")
-        except Exception as e:
-            _LOGGER.error(f"VinFast Geocoding Error: {e}")
+                return res.json().get("display_name", f"{lat}, {lon}")
+        except Exception: pass
         return f"{lat}, {lon}"
 
     def wake_up_vehicle(self):
+        """Đánh thức xe và ép gửi dữ liệu mới (Giả lập App VinFast)"""
         try:
+            # 1. Bắn Ping Đánh thức
             ping_path = "ccaraccessmgmt/api/v1/telemetry/app/ping"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
             headers.update({"X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts), "X-TIMESTAMP": str(ts)})
             requests.post(f"{API_BASE}/{ping_path}", headers=headers, json=[])
             
+            # 2. Gom toàn bộ mã của mọi dòng xe để "Đòi nợ" chung
+            master_dict = {**BASE_SENSORS, **VF3_SENSORS, **VF567_SENSORS, **VF89_SENSORS}
             payload = []
-            for key in SENSOR_DICT.keys():
+            for key in master_dict.keys():
                 if "_" in key and not key.startswith("api_"):
                     parts = key.split("_")
-                    if len(parts) == 3:
-                        payload.append({"objectId": str(int(parts[0])), "instanceId": str(int(parts[1])), "resourceId": str(int(parts[2]))})
+                    if len(parts) == 3: payload.append({"objectId": str(int(parts[0])), "instanceId": str(int(parts[1])), "resourceId": str(int(parts[2]))})
 
+            # 3. Gửi lệnh List Resource
             lr_path = f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource"
             ts2 = int(time.time() * 1000)
             headers2 = self._get_base_headers()
             headers2.update({"X-HASH": self._generate_x_hash("POST", lr_path, self.vin, ts2), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path, "POST", ts2), "X-TIMESTAMP": str(ts2)})
             res = requests.post(f"{API_BASE}/{lr_path}", headers=headers2, json=payload)
 
+            # Dự phòng cho xe nền tảng cũ
             if res.status_code == 404:
                 lr_path_2 = "ccaraccessmgmt/api/v1/telemetry/list_resource"
                 ts3 = int(time.time() * 1000)
@@ -152,6 +161,7 @@ class VinFastAPI:
         except Exception: pass
 
     def fetch_charging_history(self):
+        """Kéo dữ liệu sạc và tính toán tiền sạc"""
         try:
             method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
             all_sessions = []
@@ -180,18 +190,19 @@ class VinFastAPI:
             t_kwh = sum(float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
             t_cost = sum(float(s.get("finalAmount", 0)) for s in unique_sessions.values() if float(s.get("totalKWCharged", 0)) > 0)
 
-            # Cập nhật thêm cảm biến tự tính toán
+            # Cập nhật Data và Tính toán tiền tệ dựa vào Options Config
             self._last_data.update({
                 "api_total_charge_sessions": t_sessions,
                 "api_total_energy_charged": round(t_kwh, 2),
                 "api_total_charge_cost": round(t_cost, 0),
-                "api_charge_cost_est": round(t_kwh * COST_PER_KWH, 0)
+                "api_total_charge_cost_est": round(t_kwh * self.cost_per_kwh, 0)
             })
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
+        """Sinh URL kết nối WebSocket MQTT của AWS IoT"""
         res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}})
         identity_id = res_id.json()["IdentityId"]
         creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}})
@@ -209,35 +220,31 @@ class VinFastAPI:
         return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
 
     def _api_polling_loop(self):
-        """Vòng lặp thông minh: Tự điều chỉnh tần suất Ping (Dynamic Polling)"""
+        """Vòng lặp Smart Polling"""
         counter = 0
-        last_ping_time = time.time() - 300 # Cho phép Ping ngay lần đầu
+        last_ping_time = time.time() - 300 
         
         while self._running:
             try:
                 current_time = time.time()
                 
-                # --- THUẬT TOÁN SMART SLEEP ---
-                if self._is_moving:
-                    poll_interval = 60 # Xe chạy: Ping mỗi 1 phút
+                # Cấu hình Sleep thông minh bảo vệ Ắc quy 12V
+                if self._is_moving: poll_interval = 60 # Xe chạy: Ping 1 phút/lần
                 else:
                     time_since_moved = current_time - self._last_moved_time
-                    if time_since_moved > 1800: # Đỗ quá 30 phút
-                        poll_interval = 900 # Ping mỗi 15 phút (Bảo vệ ắc quy 12V)
-                    else:
-                        poll_interval = 300 # Vừa đỗ: Ping mỗi 5 phút
+                    if time_since_moved > 1800: poll_interval = 900 # Đỗ quá 30p: Ping 15 phút/lần
+                    else: poll_interval = 300 # Vừa đỗ: Ping 5 phút/lần
                 
-                # Bắn lệnh Ping theo nhịp Interval
                 if current_time - last_ping_time >= poll_interval:
                     if self.client and self.client.is_connected():
                         self.wake_up_vehicle()
                         last_ping_time = current_time
 
-                # Quét API sạc mỗi 60 phút
+                # API Sạc: Quét lần đầu và mỗi 60 phút
                 if counter == 0 or (counter > 0 and counter % 3600 == 0):
                     self.fetch_charging_history()
 
-                # Refresh Token AWS mỗi 12 tiếng
+                # Làm mới Token AWS mỗi 12 tiếng
                 if counter > 0 and counter % 43200 == 0:
                     self.login()
                     self._register_device_trust()
@@ -246,9 +253,8 @@ class VinFastAPI:
                     self.client.reconnect()
                     counter = 0
 
-            except Exception as e: pass
-
-            time.sleep(1)
+            except Exception: pass
+            time.sleep(1) # Trì hoãn linh hoạt để dừng an toàn
             counter += 1
 
     def start_mqtt(self):
@@ -291,38 +297,47 @@ class VinFastAPI:
             if data_dict:
                 self._last_data.update(data_dict)
                 
-                # --- PHÂN TÍCH SMART SENSORS TỪ DỮ LIỆU THÔ ---
-                speed = float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0))) # VF3 Speed
-                gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) # VF3 Gear
-                odo = float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) # VF3 ODO
+                # --- TOÁN HỌC & TRÍ TUỆ NHÂN TẠO ---
+                # Hỗ trợ chéo cho VF3/5/6/7 và VF8/9
+                speed = float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
+                if speed == 0: speed = float(data_dict.get("34188_00000_00000", self._last_data.get("34188_00000_00000", 0)))
                 
-                # Cập nhật trạng thái Di chuyển
-                self._is_moving = (speed > 0) or (gear not in ["1", 1]) # Gear 1 là P
+                gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
+                if gear == "1": gear = str(data_dict.get("34187_00000_00000", self._last_data.get("34187_00000_00000", "1")))
+                
+                odo = float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
+                if odo == 0: odo = float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
+                
+                # Tính tổng chi phí Xăng dựa trên Tổng ODO
+                if odo > 0:
+                    self._last_data["api_total_gas_cost"] = round(odo * (self.gas_price / self.gas_km_per_liter), 0)
+
+                # Nhận diện trạng thái di chuyển
+                self._is_moving = (speed > 0) or (gear not in ["1", 1]) # Gear 1 = Park
                 if self._is_moving:
                     self._last_moved_time = time.time()
                     self._last_data["api_vehicle_status"] = "Đang di chuyển"
                 else:
                     self._last_data["api_vehicle_status"] = "Đang đỗ"
 
-                # Logic tính Trip: Bắt đầu khi vào D (4), kết thúc khi về P (1)
+                # Tính Trip: Bắt đầu từ D (4), kết thúc khi về P (1)
                 if gear == "4" and self._trip_start_odo is None:
                     self._trip_start_odo = odo
-                elif gear == "1":
-                    pass # Giữ nguyên trip cũ khi về P để xem lại
                 
                 if self._trip_start_odo is not None and odo >= self._trip_start_odo:
                     trip_dist = odo - self._trip_start_odo
                     self._last_data["api_trip_distance"] = round(trip_dist, 1)
-                    # Tính chi phí xăng tương đương
-                    gas_liters = trip_dist / GAS_KM_PER_LITER
-                    self._last_data["api_gas_cost_saved"] = round(gas_liters * GAS_PRICE_PER_LITER, 0)
+                    
+                    # Tính Chi phí Trip
+                    self._last_data["api_trip_gas_cost"] = round(trip_dist * (self.gas_price / self.gas_km_per_liter), 0)
+                    self._last_data["api_trip_charge_cost"] = round(trip_dist * self.ev_kwh_per_km * self.cost_per_kwh, 0)
 
-                # Cập nhật Address từ Tọa độ
+                # Dịch tọa độ ngược
                 lat = data_dict.get("00006_00001_00000")
                 lon = data_dict.get("00006_00001_00001")
                 if lat and lon:
                     curr_coord = f"{lat},{lon}"
-                    if curr_coord != self._last_lat_lon: # Chỉ gọi API nếu xe dịch chuyển
+                    if curr_coord != self._last_lat_lon: 
                         self._last_lat_lon = curr_coord
                         self._last_address = self.get_address_from_osm(lat, lon)
                         self._last_data["api_current_address"] = self._last_address
