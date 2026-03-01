@@ -11,29 +11,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     api = hass.data[DOMAIN][config_entry.entry_id]["api"]
     sensors = []
     
-    # 1. Luôn nạp các cảm biến dùng chung
     active_dict = BASE_SENSORS.copy()
     
-    # 2. Sử dụng "vehicle_model" thu từ API để nhận diện chính xác dòng xe
-    vehicle_model = getattr(api, "vehicle_model", "UNKNOWN").upper()
-    vehicle_name = str(api.vehicle_name).upper()
-    combined_identifier = f"{vehicle_model} {vehicle_name}"
+    model_display = getattr(api, "vehicle_model_display", "Unknown")
     
-    if "VF 3" in combined_identifier or "VF3" in combined_identifier:
+    if model_display == "VF 3":
         active_dict.update(VF3_SENSORS)
-        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 3 (Model: {vehicle_model}).")
-        
-    elif any(m in combined_identifier for m in ["VF 5", "VF5", "VF 6", "VF6", "VF 7", "VF7", "VFE34", "VF E34"]):
-        active_dict.update(VF3_SENSORS)
-        active_dict.update(VF567_SENSORS)
-        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 5/6/7 (Model: {vehicle_model}).")
-        
-    elif "VF 8" in combined_identifier or "VF8" in combined_identifier or "VF 9" in combined_identifier or "VF9" in combined_identifier:
+        _LOGGER.info("VinFast: Đã nhận diện chính xác xe VF 3. Nạp từ điển VF3.")
+    elif model_display == "VF 5" or model_display == "VF 6" or model_display == "VF 7":
+        active_dict.update(VF3_SENSORS) 
+        active_dict.update(VF567_SENSORS) 
+    elif model_display == "VF 8" or model_display == "VF 9":
         active_dict.update(VF89_SENSORS)
-        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 8/9 (Model: {vehicle_model}).")
-        
     else:
-        # Dự phòng: Tải tất cả
         active_dict.update(VF3_SENSORS)
         active_dict.update(VF567_SENSORS)
         active_dict.update(VF89_SENSORS)
@@ -65,9 +55,9 @@ class VinFastSensor(SensorEntity):
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, api.vin)},
-            name=f"{api.vehicle_name} ({api.vin})",
+            name=f"{api.vehicle_name} ({getattr(api, 'vehicle_model_display', 'EV')})",
             manufacturer="VinFast",
-            model=getattr(api, "vehicle_model", api.vehicle_name),
+            model=getattr(api, "vehicle_model_display", "EV"),
         )
 
     @property
@@ -79,14 +69,15 @@ class VinFastSensor(SensorEntity):
         if self._device_key in data:
             val = data[self._device_key]
             
-            # --- XỬ LÝ FORMARTING HIỂN THỊ TIỀN TỆ AN TOÀN ---
+            # --- FIX LỖI CRASH TIỀN TỆ: Trả về số thực, để HA tự động format dấy phẩy/chấm ---
             if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
                 try:
-                    val = "{:,.0f}".format(float(val)).replace(",", ".")
+                    val = round(float(val), 0)
                 except (ValueError, TypeError):
-                    pass # Bỏ qua nếu giá trị lỗi
+                    val = 0
 
-            elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00005_00050", "10351_00006_00050"]:
+            # --- ĐÓNG / MỞ ---
+            elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00003_00050", "10351_00004_00050", "10351_00005_00050", "10351_00006_00050"]:
                 val = "Mở" if str(val) == "1" else "Đóng"
                 
             elif self._device_key in ["34215_00001_00002", "34215_00002_00002", "34215_00003_00002", "34215_00004_00002"]:
