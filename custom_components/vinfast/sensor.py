@@ -14,29 +14,30 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     # 1. Luôn nạp các cảm biến dùng chung
     active_dict = BASE_SENSORS.copy()
     
-    # 2. Nhận diện dòng xe để nạp Từ điển
+    # 2. Sử dụng "vehicle_model" thu từ API để nhận diện chính xác dòng xe
+    vehicle_model = getattr(api, "vehicle_model", "UNKNOWN").upper()
     vehicle_name = str(api.vehicle_name).upper()
+    combined_identifier = f"{vehicle_model} {vehicle_name}"
     
-    if "VF 3" in vehicle_name or "VF3" in vehicle_name:
+    if "VF 3" in combined_identifier or "VF3" in combined_identifier:
         active_dict.update(VF3_SENSORS)
-        _LOGGER.info("VinFast: Đã nạp Từ điển chuẩn cho VF 3.")
+        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 3 (Model: {vehicle_model}).")
         
-    elif any(model in vehicle_name for model in ["VF 5", "VF5", "VF 6", "VF6", "VF 7", "VF7", "VFE34", "VF E34"]):
-        active_dict.update(VF3_SENSORS) # Lấy nền tảng VF3
-        active_dict.update(VF567_SENSORS) # Cộng thêm Cảm biến lốp, Kính sau
-        _LOGGER.info("VinFast: Đã nạp Từ điển mở rộng cho VF 5/6/7.")
+    elif any(m in combined_identifier for m in ["VF 5", "VF5", "VF 6", "VF6", "VF 7", "VF7", "VFE34", "VF E34"]):
+        active_dict.update(VF3_SENSORS)
+        active_dict.update(VF567_SENSORS)
+        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 5/6/7 (Model: {vehicle_model}).")
         
-    elif "VF 8" in vehicle_name or "VF8" in vehicle_name or "VF 9" in vehicle_name or "VF9" in vehicle_name:
+    elif "VF 8" in combined_identifier or "VF8" in combined_identifier or "VF 9" in combined_identifier or "VF9" in combined_identifier:
         active_dict.update(VF89_SENSORS)
-        _LOGGER.info("VinFast: Đã nạp Từ điển cho VF 8/9.")
+        _LOGGER.info(f"VinFast: Đã nhận diện xe VF 8/9 (Model: {vehicle_model}).")
         
     else:
+        # Dự phòng: Tải tất cả
         active_dict.update(VF3_SENSORS)
         active_dict.update(VF567_SENSORS)
         active_dict.update(VF89_SENSORS)
 
-    api.active_sensor_dict = active_dict
-    
     for device_key, info in active_dict.items():
         name, unit, icon, dev_class = info
         sensors.append(VinFastSensor(api, device_key, name, unit, icon, dev_class))
@@ -66,7 +67,7 @@ class VinFastSensor(SensorEntity):
             identifiers={(DOMAIN, api.vin)},
             name=f"{api.vehicle_name} ({api.vin})",
             manufacturer="VinFast",
-            model=api.vehicle_name,
+            model=getattr(api, "vehicle_model", api.vehicle_name),
         )
 
     @property
@@ -78,9 +79,12 @@ class VinFastSensor(SensorEntity):
         if self._device_key in data:
             val = data[self._device_key]
             
-            # --- XỬ LÝ FORMARTING HIỂN THỊ ---
+            # --- XỬ LÝ FORMARTING HIỂN THỊ TIỀN TỆ AN TOÀN ---
             if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
-                val = "{:,.0f}".format(float(val)).replace(",", ".")
+                try:
+                    val = "{:,.0f}".format(float(val)).replace(",", ".")
+                except (ValueError, TypeError):
+                    pass # Bỏ qua nếu giá trị lỗi
 
             elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00005_00050", "10351_00006_00050"]:
                 val = "Mở" if str(val) == "1" else "Đóng"
