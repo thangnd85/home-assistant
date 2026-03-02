@@ -62,6 +62,7 @@ class VinFastAPI:
         self.gas_km_per_liter = get_opt("gas_km_per_liter", 20.0)
 
         self._last_moved_time = time.time()
+        self._last_activity_time = time.time()
         self._is_moving = False
         self._trip_start_odo = None
         self._last_gear = "1"
@@ -85,7 +86,7 @@ class VinFastAPI:
             "client_id": AUTH0_CLIENT_ID, "grant_type": "password",
             "username": self.email, "password": self.password,
             "scope": "openid profile email offline_access", "audience": API_BASE
-        }, timeout=15) # THÊM TIMEOUT CHỐNG TREO
+        }, timeout=15)
         res.raise_for_status()
         self.access_token = res.json()["access_token"]
         return self.access_token
@@ -139,6 +140,27 @@ class VinFastAPI:
             "x-player-identifier": self.user_id, "Content-Type": "application/json"
         }
 
+    # --- HÀM GỌI API CHUẨN: TỰ ĐỘNG LOGIN NẾU TOKEN HẾT HẠN (LỖI 401) ---
+    def _post_api(self, path, payload, max_retries=1):
+        for _ in range(max_retries + 1):
+            ts = int(time.time() * 1000)
+            headers = self._get_base_headers()
+            headers.update({
+                "X-HASH": self._generate_x_hash("POST", path, self.vin, ts),
+                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, path, "POST", ts),
+                "X-TIMESTAMP": str(ts)
+            })
+            try:
+                res = requests.post(f"{API_BASE}/{path}", headers=headers, json=payload, timeout=15)
+                if res.status_code == 401:
+                    self.login() # Tự động làm mới Token
+                    continue
+                return res
+            except Exception as e:
+                _LOGGER.error(f"VinFast API Error ({path}): {e}")
+                return None
+        return None
+
     def _register_device_trust(self):
         try:
             method, api_path = "PUT", "ccarusermgnt/api/v1/device-trust/fcm-token"
@@ -156,86 +178,42 @@ class VinFastAPI:
         except Exception: pass
         return f"{lat}, {lon}"
 
-    def wake_up_vehicle(self):
-        try:
-            # FIX LỖI TỪ ĐIỂN: Lọc chuẩn mã để tránh bị xe từ chối
-            active_dict = BASE_SENSORS.copy()
-            if self.vehicle_model_display == "VF 3":
-                active_dict.update(VF3_SENSORS)
-            elif self.vehicle_model_display in ["VF 5", "VF 6", "VF 7"]:
-                active_dict.update(VF3_SENSORS)
-                active_dict.update(VF567_SENSORS)
-            elif self.vehicle_model_display in ["VF 8", "VF 9"]:
-                active_dict.update(VF89_SENSORS)
-            else:
-                active_dict.update(VF3_SENSORS)
-                active_dict.update(VF567_SENSORS)
-                active_dict.update(VF89_SENSORS)
+    def ping_vehicle(self):
+        """Chỉ gọi xe dậy (Ping), không đòi nợ mệt mỏi"""
+        self._post_api("ccaraccessmgmt/api/v1/telemetry/app/ping", [])
 
-            payload = []
-            for key in active_dict.keys():
-                if "_" in key and not key.startswith("api_"):
-                    parts = key.split("_")
-                    if len(parts) == 3: payload.append({"objectId": str(int(parts[0])), "instanceId": str(int(parts[1])), "resourceId": str(int(parts[2]))})
+    def force_refresh_data(self):
+        """Ping + Đòi nợ toàn bộ danh sách cảm biến (Dùng khi xe đỗ/ngủ)"""
+        self.ping_vehicle()
+        
+        active_dict = BASE_SENSORS.copy()
+        if self.vehicle_model_display == "VF 3": active_dict.update(VF3_SENSORS)
+        elif self.vehicle_model_display in ["VF 5", "VF 6", "VF 7"]: active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS)
+        elif self.vehicle_model_display in ["VF 8", "VF 9"]: active_dict.update(VF89_SENSORS)
+        else: active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS), active_dict.update(VF89_SENSORS)
 
-            # 1. Bắn Ping
-            ping_path = "ccaraccessmgmt/api/v1/telemetry/app/ping"
-            ts = int(time.time() * 1000)
-            headers = self._get_base_headers()
-            headers.update({"X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts), "X-TIMESTAMP": str(ts)})
-            requests.post(f"{API_BASE}/{ping_path}", headers=headers, json=[], timeout=15) # TIMEOUT 15s
+        payload = [{"objectId": str(int(k.split("_")[0])), "instanceId": str(int(k.split("_")[1])), "resourceId": str(int(k.split("_")[2]))} for k in active_dict.keys() if "_" in k and not k.startswith("api_")]
 
-            # 2. Đòi dữ liệu
-            lr_path = f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource"
-            ts2 = int(time.time() * 1000)
-            headers2 = self._get_base_headers()
-            headers2.update({"X-HASH": self._generate_x_hash("POST", lr_path, self.vin, ts2), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path, "POST", ts2), "X-TIMESTAMP": str(ts2)})
-            res = requests.post(f"{API_BASE}/{lr_path}", headers=headers2, json=payload, timeout=15)
-
-            if res.status_code == 404:
-                lr_path_2 = "ccaraccessmgmt/api/v1/telemetry/list_resource"
-                ts3 = int(time.time() * 1000)
-                headers3 = self._get_base_headers()
-                headers3.update({"X-HASH": self._generate_x_hash("POST", lr_path_2, self.vin, ts3), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path_2, "POST", ts3), "X-TIMESTAMP": str(ts3)})
-                requests.post(f"{API_BASE}/{lr_path_2}", headers=headers3, json=payload, timeout=15)
-
-        except Exception as e: 
-            _LOGGER.error(f"VinFast Wakeup Error (Timeout or block): {e}")
+        res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", payload)
+        if res and res.status_code == 404:
+            self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", payload)
 
     def fetch_charging_history(self):
         try:
-            method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
-            all_sessions = []
-            page, size, total_pages = 0, 100, 1
-            while page < total_pages and self._running:
-                ts = int(time.time() * 1000)
-                headers = self._get_base_headers()
-                headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
-                res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json={"orderStatus": [3, 5, 7]}, timeout=15)
-                if res.status_code == 401:
-                    self.login()
-                    continue
-                if res.status_code != 200: break
+            res = self._post_api("ccarcharging/api/v1/charging-sessions/search?page=0&size=100", {"orderStatus": [3, 5, 7]})
+            if res and res.status_code == 200:
                 data = res.json()
                 sessions = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("data", {}).get("content", []) if isinstance(data.get("data"), dict) else data.get("content", []))
-                all_sessions.extend(sessions)
-                if page == 0:
-                    meta = data.get("metadata", {})
-                    if not meta and isinstance(data.get("data"), dict): meta = data.get("data", {}).get("metadata", {})
-                    total_records = meta.get("totalRecords") or len(sessions)
-                    if total_records > 0: total_pages = math.ceil(total_records / size)
-                page += 1
                 
-            unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in all_sessions}
-            t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
-            t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
-            
-            self._last_data["api_total_charge_sessions"] = t_sessions
-            self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
-            self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
-            
-            if self.callbacks:
-                for cb in self.callbacks: cb(self._last_data)
+                unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in sessions}
+                t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
+                t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
+                
+                self._last_data["api_total_charge_sessions"] = t_sessions
+                self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
+                self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
+                if self.callbacks:
+                    for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
@@ -256,36 +234,24 @@ class VinFastAPI:
         return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
 
     def _api_polling_loop(self):
-        # FIX LỖI TIMER: Dùng mốc thời gian tuyệt đối (Absolute Time) thay vì counter += 1
-        last_ping_time = 0
+        last_refresh_time = 0
         last_charge_history_time = 0
         last_aws_token_time = time.time()
         
+        # Bắt buộc kéo full dữ liệu ở giây thứ 0 khi mới chạy HA
+        if self.client:
+            self.force_refresh_data()
+
         while self._running:
             try:
                 current_time = time.time()
                 
-                # Logic ngủ thông minh
-                if self._is_moving: 
-                    poll_interval = 60 # 1 phút/lần nếu xe đang chạy
-                else:
-                    if (current_time - self._last_moved_time) > 1800: 
-                        poll_interval = 900 # 15 phút/lần nếu đỗ > 30p
-                    else: 
-                        poll_interval = 300 # 5 phút/lần nếu vừa đỗ
-                
-                # 1. Bắn Ping Đòi nợ
-                if current_time - last_ping_time >= poll_interval:
-                    if self.client and self.client.is_connected():
-                        self.wake_up_vehicle()
-                        last_ping_time = time.time()
-
-                # 2. Quét Lịch sử sạc (Mỗi 60 phút = 3600s)
+                # Quét Lịch sử sạc (Mỗi 60 phút)
                 if current_time - last_charge_history_time >= 3600:
                     self.fetch_charging_history()
                     last_charge_history_time = time.time()
 
-                # 3. Làm mới Token kết nối AWS (Mỗi 12 giờ)
+                # Làm mới Token AWS (Mỗi 12 giờ)
                 if current_time - last_aws_token_time >= 43200:
                     self.login()
                     self._register_device_trust()
@@ -294,10 +260,35 @@ class VinFastAPI:
                     self.client.reconnect()
                     last_aws_token_time = time.time()
 
-            except Exception as e: 
-                pass
-            
-            time.sleep(1) # Nghỉ để không ăn mòn CPU
+                # LOGIC LẮNG NGHE THỤ ĐỘNG (PASSIVE LISTENING)
+                time_since_moved = current_time - self._last_moved_time
+                time_since_activity = current_time - self._last_activity_time
+
+                if self._is_moving:
+                    # Xe ĐANG CHẠY: T-Box tự đẩy dữ liệu siêu tốc. KHÔNG ĐƯỢC SPAM API "list_resource" để tránh lỗi 429.
+                    # Chỉ gửi Ping giữ kết nối mỗi 5 phút.
+                    poll_interval = 300 
+                elif time_since_activity < 120:
+                    # Xe vừa có thao tác (mở cửa/đóng cốp) -> T-Box đang thức. Gửi Ping để duy trì thức.
+                    poll_interval = 120
+                elif time_since_moved < 1800:
+                    # Xe đỗ dưới 30p: Ép kéo dữ liệu mỗi 5 phút
+                    poll_interval = 300
+                else:
+                    # Xe đỗ lâu: Ngủ sâu, mỗi 15 phút gọi 1 lần bảo vệ bình 12V
+                    poll_interval = 900
+
+                # Xử lý bắn tín hiệu Wake-up
+                if current_time - last_refresh_time >= poll_interval:
+                    if self.client and self.client.is_connected():
+                        if self._is_moving:
+                            self.ping_vehicle() # Chỉ gõ cửa nhẹ
+                        else:
+                            self.force_refresh_data() # Bắt nôn hết dữ liệu
+                        last_refresh_time = time.time()
+
+            except Exception: pass
+            time.sleep(1) # Vòng lặp nhỏ để không ăn CPU và nhận tín hiệu ngắt liên tục
 
     def start_mqtt(self):
         if self._running: return
@@ -337,6 +328,9 @@ class VinFastAPI:
                 if key and val is not None: data_dict[key] = val
             
             if data_dict:
+                # Có tín hiệu từ xe là Reset bộ đếm Activity
+                self._last_activity_time = time.time() 
+                
                 self._last_data.update(data_dict)
                 
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
@@ -349,6 +343,7 @@ class VinFastAPI:
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
+                # Số 1 = P, Số 4 = D, Số 2 = R
                 self._is_moving = (speed > 0) or (gear not in ["1", 1]) 
                 if self._is_moving:
                     self._last_moved_time = time.time()
@@ -356,6 +351,7 @@ class VinFastAPI:
                 else:
                     self._last_data["api_vehicle_status"] = "Đang đỗ"
 
+                # THUẬT TOÁN TRIP CHUẨN: Reset ODO gốc khi chuyển từ P sang số khác (D/R)
                 if gear != "1" and self._last_gear == "1" and odo > 0:
                     self._trip_start_odo = odo 
                 self._last_gear = gear
