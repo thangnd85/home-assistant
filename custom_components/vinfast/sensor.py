@@ -12,16 +12,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     sensors = []
     
     active_dict = BASE_SENSORS.copy()
+    model = getattr(api, "vehicle_model_display", "Unknown").upper()
     
-    model_display = getattr(api, "vehicle_model_display", "Unknown")
-    
-    if model_display == "VF 3":
+    if "VF 3" in model or "VF3" in model:
         active_dict.update(VF3_SENSORS)
-        _LOGGER.info("VinFast: Đã nhận diện chính xác xe VF 3. Nạp từ điển VF3.")
-    elif model_display == "VF 5" or model_display == "VF 6" or model_display == "VF 7":
+    elif any(m in model for m in ["VF 5", "VF 6", "VF 7", "VFE34", "VF5", "VF6", "VF7"]):
         active_dict.update(VF3_SENSORS) 
         active_dict.update(VF567_SENSORS) 
-    elif model_display == "VF 8" or model_display == "VF 9":
+    elif any(m in model for m in ["VF 8", "VF 9", "VF8", "VF9"]):
         active_dict.update(VF89_SENSORS)
     else:
         active_dict.update(VF3_SENSORS)
@@ -39,7 +37,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             hass.loop.call_soon_threadsafe(sensor.process_new_data, data)
 
     api.add_callback(handle_new_data)
-
+    handle_new_data(api._last_data)
 
 class VinFastSensor(SensorEntity):
     def __init__(self, api, device_key, name, unit, icon, dev_class):
@@ -48,14 +46,16 @@ class VinFastSensor(SensorEntity):
         self._attr_has_entity_name = True 
         self._attr_name = name 
         self._attr_unique_id = f"vinfast_{api.vin}_{device_key}"
-        self._attr_native_unit_of_measurement = unit if unit else None
+        self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
         self._attr_device_class = dev_class
-        self._attr_native_value = None
+        
+        # Thiết lập giá trị an toàn lúc khởi động
+        self._attr_native_value = api._last_data.get(device_key)
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, api.vin)},
-            name=f"{api.vehicle_name} ({getattr(api, 'vehicle_model_display', 'EV')})",
+            name=f"{getattr(api, 'vehicle_name', 'Xe VinFast')} ({getattr(api, 'vehicle_model_display', 'EV')})",
             manufacturer="VinFast",
             model=getattr(api, "vehicle_model_display", "EV"),
         )
@@ -69,14 +69,20 @@ class VinFastSensor(SensorEntity):
         if self._device_key in data:
             val = data[self._device_key]
             
-            # --- FIX LỖI CRASH TIỀN TỆ: Trả về số thực, để HA tự động format dấy phẩy/chấm ---
-            if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
-                try:
-                    val = round(float(val), 0)
-                except (ValueError, TypeError):
-                    val = 0
+            if val is None:
+                return
 
-            # --- ĐÓNG / MỞ ---
+            # Cảm biến Tiền tệ (Làm tròn số nguyên)
+            if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
+                try: val = round(float(val), 0)
+                except (ValueError, TypeError): val = 0
+                
+            # Cảm biến Hiệu suất (Làm tròn 2 chữ số thập phân)
+            elif self._device_key in ["api_static_capacity", "api_static_range", "api_battery_degradation", "api_lifetime_efficiency"]:
+                try: val = round(float(val), 2)
+                except (ValueError, TypeError): val = 0
+
+            # Xử lý Trạng thái Đóng / Mở
             elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00003_00050", "10351_00004_00050", "10351_00005_00050", "10351_00006_00050"]:
                 val = "Mở" if str(val) == "1" else "Đóng"
                 
