@@ -52,7 +52,6 @@ class VinFastAPI:
             "api_total_energy_charged": 0,
         }  
         
-        # Chống lỗi nhân với số 0 nếu Options trống
         def get_opt(key, def_val):
             val = self.options.get(key)
             return float(val) if val is not None and float(val) > 0 else float(def_val)
@@ -86,7 +85,7 @@ class VinFastAPI:
             "client_id": AUTH0_CLIENT_ID, "grant_type": "password",
             "username": self.email, "password": self.password,
             "scope": "openid profile email offline_access", "audience": API_BASE
-        })
+        }, timeout=15) # THÊM TIMEOUT CHỐNG TREO
         res.raise_for_status()
         self.access_token = res.json()["access_token"]
         return self.access_token
@@ -94,7 +93,7 @@ class VinFastAPI:
     def get_vehicles(self):
         url = f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle"
         headers = {"Authorization": f"Bearer {self.access_token}", "x-service-name": "CAPP", "x-app-version": "2.17.5", "x-device-platform": "android"}
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
         vehicles = res.json().get("data", [])
         if vehicles:
@@ -103,7 +102,6 @@ class VinFastAPI:
             if not self.vin: self.vin = v.get("vinCode", "")
             self.vehicle_name = v.get("vehicleName") or "VinFast EV"
             
-            # --- NHẬN DIỆN DÒNG XE THÔNG MINH ---
             m_name = str(v.get("marketingName", "")).strip().upper()
             d_model = str(v.get("dmsVehicleModel", "")).strip().upper()
             v_model = str(v.get("vehicleModel", "")).strip().upper()
@@ -147,7 +145,7 @@ class VinFastAPI:
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
             headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
-            requests.put(f"{API_BASE}/{api_path}", headers=headers, json={"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"})
+            requests.put(f"{API_BASE}/{api_path}", headers=headers, json={"fcmToken": f"ha_bypass_token_{int(time.time())}", "devicePlatform": "android"}, timeout=10)
         except Exception: pass
 
     def get_address_from_osm(self, lat, lon):
@@ -160,32 +158,49 @@ class VinFastAPI:
 
     def wake_up_vehicle(self):
         try:
-            ping_path = "ccaraccessmgmt/api/v1/telemetry/app/ping"
-            ts = int(time.time() * 1000)
-            headers = self._get_base_headers()
-            headers.update({"X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts), "X-TIMESTAMP": str(ts)})
-            requests.post(f"{API_BASE}/{ping_path}", headers=headers, json=[])
-            
-            master_dict = {**BASE_SENSORS, **VF3_SENSORS, **VF567_SENSORS, **VF89_SENSORS}
+            # FIX LỖI TỪ ĐIỂN: Lọc chuẩn mã để tránh bị xe từ chối
+            active_dict = BASE_SENSORS.copy()
+            if self.vehicle_model_display == "VF 3":
+                active_dict.update(VF3_SENSORS)
+            elif self.vehicle_model_display in ["VF 5", "VF 6", "VF 7"]:
+                active_dict.update(VF3_SENSORS)
+                active_dict.update(VF567_SENSORS)
+            elif self.vehicle_model_display in ["VF 8", "VF 9"]:
+                active_dict.update(VF89_SENSORS)
+            else:
+                active_dict.update(VF3_SENSORS)
+                active_dict.update(VF567_SENSORS)
+                active_dict.update(VF89_SENSORS)
+
             payload = []
-            for key in master_dict.keys():
+            for key in active_dict.keys():
                 if "_" in key and not key.startswith("api_"):
                     parts = key.split("_")
                     if len(parts) == 3: payload.append({"objectId": str(int(parts[0])), "instanceId": str(int(parts[1])), "resourceId": str(int(parts[2]))})
 
+            # 1. Bắn Ping
+            ping_path = "ccaraccessmgmt/api/v1/telemetry/app/ping"
+            ts = int(time.time() * 1000)
+            headers = self._get_base_headers()
+            headers.update({"X-HASH": self._generate_x_hash("POST", ping_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, ping_path, "POST", ts), "X-TIMESTAMP": str(ts)})
+            requests.post(f"{API_BASE}/{ping_path}", headers=headers, json=[], timeout=15) # TIMEOUT 15s
+
+            # 2. Đòi dữ liệu
             lr_path = f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource"
             ts2 = int(time.time() * 1000)
             headers2 = self._get_base_headers()
             headers2.update({"X-HASH": self._generate_x_hash("POST", lr_path, self.vin, ts2), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path, "POST", ts2), "X-TIMESTAMP": str(ts2)})
-            res = requests.post(f"{API_BASE}/{lr_path}", headers=headers2, json=payload)
+            res = requests.post(f"{API_BASE}/{lr_path}", headers=headers2, json=payload, timeout=15)
 
             if res.status_code == 404:
                 lr_path_2 = "ccaraccessmgmt/api/v1/telemetry/list_resource"
                 ts3 = int(time.time() * 1000)
                 headers3 = self._get_base_headers()
                 headers3.update({"X-HASH": self._generate_x_hash("POST", lr_path_2, self.vin, ts3), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, lr_path_2, "POST", ts3), "X-TIMESTAMP": str(ts3)})
-                requests.post(f"{API_BASE}/{lr_path_2}", headers=headers3, json=payload)
-        except Exception: pass
+                requests.post(f"{API_BASE}/{lr_path_2}", headers=headers3, json=payload, timeout=15)
+
+        except Exception as e: 
+            _LOGGER.error(f"VinFast Wakeup Error (Timeout or block): {e}")
 
     def fetch_charging_history(self):
         try:
@@ -196,7 +211,7 @@ class VinFastAPI:
                 ts = int(time.time() * 1000)
                 headers = self._get_base_headers()
                 headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
-                res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json={"orderStatus": [3, 5, 7]})
+                res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json={"orderStatus": [3, 5, 7]}, timeout=15)
                 if res.status_code == 401:
                     self.login()
                     continue
@@ -215,7 +230,6 @@ class VinFastAPI:
             t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
             t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
             
-            # Thực thi toán học Tính Tiền Sạc
             self._last_data["api_total_charge_sessions"] = t_sessions
             self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
             self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
@@ -225,11 +239,11 @@ class VinFastAPI:
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
-        res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}})
+        res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}}, timeout=15)
         identity_id = res_id.json()["IdentityId"]
-        creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}})
+        creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}}, timeout=15)
         creds = creds_res.json()["Credentials"]
-        requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id})
+        requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id}, timeout=15)
 
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
         amz_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -242,36 +256,48 @@ class VinFastAPI:
         return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
 
     def _api_polling_loop(self):
-        counter = 0
-        last_ping_time = time.time() - 300 
+        # FIX LỖI TIMER: Dùng mốc thời gian tuyệt đối (Absolute Time) thay vì counter += 1
+        last_ping_time = 0
+        last_charge_history_time = 0
+        last_aws_token_time = time.time()
         
         while self._running:
             try:
                 current_time = time.time()
-                if self._is_moving: poll_interval = 60 
-                else:
-                    if (current_time - self._last_moved_time) > 1800: poll_interval = 900 
-                    else: poll_interval = 300 
                 
+                # Logic ngủ thông minh
+                if self._is_moving: 
+                    poll_interval = 60 # 1 phút/lần nếu xe đang chạy
+                else:
+                    if (current_time - self._last_moved_time) > 1800: 
+                        poll_interval = 900 # 15 phút/lần nếu đỗ > 30p
+                    else: 
+                        poll_interval = 300 # 5 phút/lần nếu vừa đỗ
+                
+                # 1. Bắn Ping Đòi nợ
                 if current_time - last_ping_time >= poll_interval:
                     if self.client and self.client.is_connected():
                         self.wake_up_vehicle()
-                        last_ping_time = current_time
+                        last_ping_time = time.time()
 
-                if counter == 0 or (counter > 0 and counter % 3600 == 0):
+                # 2. Quét Lịch sử sạc (Mỗi 60 phút = 3600s)
+                if current_time - last_charge_history_time >= 3600:
                     self.fetch_charging_history()
+                    last_charge_history_time = time.time()
 
-                if counter > 0 and counter % 43200 == 0:
+                # 3. Làm mới Token kết nối AWS (Mỗi 12 giờ)
+                if current_time - last_aws_token_time >= 43200:
                     self.login()
                     self._register_device_trust()
                     new_url = self._get_aws_mqtt_url()
                     self.client.ws_set_options(path=new_url.split(IOT_ENDPOINT)[1])
                     self.client.reconnect()
-                    counter = 0
+                    last_aws_token_time = time.time()
 
-            except Exception: pass
-            time.sleep(1)
-            counter += 1
+            except Exception as e: 
+                pass
+            
+            time.sleep(1) # Nghỉ để không ăn mòn CPU
 
     def start_mqtt(self):
         if self._running: return
@@ -316,12 +342,10 @@ class VinFastAPI:
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
                 gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
                 
-                # Quét ODO từ MQTT (Dùng chung 2 mã để không bị sót)
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
                 if odo == 0: 
                     odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
                 
-                # Thực thi toán học Tính Tiền Xăng = (ODO / 20) * Giá xăng
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
