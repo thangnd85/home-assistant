@@ -77,9 +77,28 @@ class VinFastSensor(SensorEntity):
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
                 
-            # Cảm biến Hiệu suất (Làm tròn 2 chữ số thập phân)
-            elif self._device_key in ["api_static_capacity", "api_static_range", "api_battery_degradation", "api_lifetime_efficiency"]:
+            # Cảm biến Hiệu suất và Phân tích sạc (Làm tròn 1-2 chữ số)
+            elif self._device_key in [
+                "api_static_capacity", "api_static_range", "api_battery_degradation", 
+                "api_lifetime_efficiency", "api_calc_max_range", "api_calc_remain_range", 
+                "api_calc_range_per_percent", "api_last_charge_energy"
+            ]:
                 try: val = round(float(val), 2)
+                except (ValueError, TypeError): val = 0
+            # Các cảm biến Toán học, Hiệu suất, Công suất sạc (Làm tròn 1-2 chữ số)
+            elif self._device_key in [
+                "api_static_capacity", "api_static_range", "api_battery_degradation", 
+                "api_lifetime_efficiency", "api_calc_max_range", "api_calc_remain_range", 
+                "api_calc_range_per_percent", "api_last_charge_energy", 
+                "api_last_charge_power", "api_last_charge_efficiency",
+                "api_est_range_degradation", "api_trip_avg_speed", 
+                "api_trip_energy_used", "api_trip_efficiency"
+            ]:
+                try: val = round(float(val), 2)
+                except (ValueError, TypeError): val = 0    
+            # Các cảm biến số nguyên (Thời lượng, % Pin sạc)
+            elif self._device_key in ["api_last_charge_duration", "api_last_charge_start_soc", "api_last_charge_end_soc"]:
+                try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
 
             # Xử lý Trạng thái Đóng / Mở
