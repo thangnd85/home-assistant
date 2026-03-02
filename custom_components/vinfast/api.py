@@ -8,13 +8,12 @@ import base64
 import urllib.parse
 import threading
 import logging
-import math
 import paho.mqtt.client as mqtt
 
 from .const import (
     AUTH0_DOMAIN, AUTH0_CLIENT_ID, API_BASE, 
     AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, 
-    BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS
+    BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS, VEHICLE_SPECS
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,11 +37,10 @@ class VinFastAPI:
         self.client = None
         self.callbacks = []
         self._running = False
-        self._polling_thread = None
         
         self._last_data = {
-            "api_vehicle_status": "Đang kết nối...",
-            "api_current_address": "Đang tải vị trí...",
+            "api_vehicle_status": "Đang khởi động...",
+            "api_current_address": "Đang kết nối...",
             "api_trip_distance": 0.0,
             "api_trip_charge_cost": 0,
             "api_trip_gas_cost": 0,
@@ -50,24 +48,24 @@ class VinFastAPI:
             "api_total_charge_cost_est": 0,
             "api_total_charge_sessions": 0,
             "api_total_energy_charged": 0,
+            "api_static_capacity": 0.0,
+            "api_static_range": 0.0,
+            "api_battery_degradation": 0.0,
+            "api_lifetime_efficiency": 0.0,
         }  
         
-        def get_opt(key, def_val):
-            val = self.options.get(key)
-            return float(val) if val is not None and float(val) > 0 else float(def_val)
+        self.cost_per_kwh = safe_float(self.options.get("cost_per_kwh", 4000), 4000)
+        self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", 0.12), 0.12)
+        self.gas_price = safe_float(self.options.get("gas_price", 20000), 20000)
+        self.gas_km_per_liter = safe_float(self.options.get("gas_km_per_liter", 20.0), 20.0)
 
-        self.cost_per_kwh = get_opt("cost_per_kwh", 4000)
-        self.ev_kwh_per_km = get_opt("ev_kwh_per_km", 0.12)
-        self.gas_price = get_opt("gas_price", 20000)
-        self.gas_km_per_liter = get_opt("gas_km_per_liter", 20.0)
-
-        self._last_moved_time = time.time()
-        self._last_activity_time = time.time()
         self._is_moving = False
         self._trip_start_odo = None
         self._last_gear = "1"
         self._last_lat_lon = None
-        self._last_address = "Đang tải vị trí..."
+        
+        # Biến đánh dấu thời gian hoạt động cuối cùng của xe để kích hoạt Real-time
+        self._last_activity_time = time.time()
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
@@ -101,24 +99,63 @@ class VinFastAPI:
             v = vehicles[0]
             self.user_id = str(v.get("userId", ""))
             if not self.vin: self.vin = v.get("vinCode", "")
-            self.vehicle_name = v.get("vehicleName") or "VinFast EV"
             
-            m_name = str(v.get("marketingName", "")).strip().upper()
-            d_model = str(v.get("dmsVehicleModel", "")).strip().upper()
-            v_model = str(v.get("vehicleModel", "")).strip().upper()
-            identity = f"{m_name} {d_model} {v_model} {str(self.vin).upper()}"
+            self.vehicle_name = v.get("customizedVehicleName") or v.get("vehicleName") or "Xe VinFast"
+            self.vehicle_model_display = v.get("marketingName") or v.get("dmsVehicleModel") or "VF"
             
-            if "VF 3" in identity or "VF3" in identity or "VBL9" in identity:
-                self.vehicle_model_display = "VF 3"
-            elif "VF 5" in identity or "VF5" in identity:
-                self.vehicle_model_display = "VF 5"
-            elif "VF 8" in identity or "VF8" in identity:
-                self.vehicle_model_display = "VF 8"
-            elif "VF 9" in identity or "VF9" in identity:
-                self.vehicle_model_display = "VF 9"
-            else:
-                self.vehicle_model_display = "Unknown"
+            self._last_data["api_vehicle_name"] = self.vehicle_name
+            self._last_data["api_vehicle_model"] = self.vehicle_model_display
+            
+            self._calculate_advanced_stats()
+            
+            if self.callbacks:
+                for cb in self.callbacks: cb(self._last_data)
+                
         return vehicles
+
+    def send_remote_command(self, command_type, params=None):
+        payload = {
+            "commandType": command_type,
+            "vinCode": self.vin,
+            "params": params or {}
+        }
+        res = self._post_api("ccaraccessmgmt/api/v2/remote/app/command", payload)
+        if res and res.status_code == 200:
+            _LOGGER.info(f"VinFast: Lệnh {command_type} thành công!")
+            return True
+        _LOGGER.error(f"VinFast: Lệnh {command_type} thất bại.")
+        return False
+
+    def _calculate_advanced_stats(self):
+        try:
+            model = self.vehicle_model_display.upper()
+            target_spec = {"capacity": 0, "range": 0}
+            for k, v in VEHICLE_SPECS.items():
+                if k.replace(" ", "") in model.replace(" ", ""):
+                    target_spec = v
+                    break
+                    
+            cap = target_spec["capacity"]
+            ran = target_spec["range"]
+            
+            if cap > 0:
+                self._last_data["api_static_capacity"] = cap
+                self._last_data["api_static_range"] = ran
+                
+                soh = safe_float(self._last_data.get("34220_00001_00001", 100))
+                if 0 < soh <= 100:
+                    lost_kwh = cap * (100 - soh) / 100
+                    self._last_data["api_battery_degradation"] = round(lost_kwh, 2)
+                    
+                total_kwh = self._last_data.get("api_total_energy_charged", 0)
+                odo = safe_float(self._last_data.get("34183_00001_00003", 0))
+                if odo == 0: odo = safe_float(self._last_data.get("34199_00000_00000", 0))
+                
+                if total_kwh > 0 and odo > 0:
+                    efficiency = (total_kwh / odo) * 100
+                    self._last_data["api_lifetime_efficiency"] = round(efficiency, 2)
+        except Exception as e:
+            _LOGGER.error(f"VinFast Stats Error: {e}")
 
     def _generate_x_hash(self, method, api_path, vin, timestamp_ms, secret_key="Vinfast@2025"):
         path_without_query = api_path.split("?")[0]
@@ -140,7 +177,6 @@ class VinFastAPI:
             "x-player-identifier": self.user_id, "Content-Type": "application/json"
         }
 
-    # --- HÀM GỌI API CHUẨN: TỰ ĐỘNG LOGIN NẾU TOKEN HẾT HẠN (LỖI 401) ---
     def _post_api(self, path, payload, max_retries=1):
         for _ in range(max_retries + 1):
             ts = int(time.time() * 1000)
@@ -153,11 +189,10 @@ class VinFastAPI:
             try:
                 res = requests.post(f"{API_BASE}/{path}", headers=headers, json=payload, timeout=15)
                 if res.status_code == 401:
-                    self.login() # Tự động làm mới Token
+                    self.login() 
                     continue
                 return res
-            except Exception as e:
-                _LOGGER.error(f"VinFast API Error ({path}): {e}")
+            except Exception:
                 return None
         return None
 
@@ -178,42 +213,84 @@ class VinFastAPI:
         except Exception: pass
         return f"{lat}, {lon}"
 
-    def ping_vehicle(self):
-        """Chỉ gọi xe dậy (Ping), không đòi nợ mệt mỏi"""
-        self._post_api("ccaraccessmgmt/api/v1/telemetry/app/ping", [])
+    def register_resources(self):
+        try:
+            active_dict = BASE_SENSORS.copy()
+            model = self.vehicle_model_display.upper()
+            
+            if "VF 3" in model or "VF3" in model: active_dict.update(VF3_SENSORS)
+            elif any(m in model for m in ["VF 5", "VF 6", "VF 7", "VF5", "VF6", "VF7"]): active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS)
+            elif any(m in model for m in ["VF 8", "VF 9", "VF8", "VF9"]): active_dict.update(VF89_SENSORS)
+            else: active_dict.update(VF3_SENSORS)
 
-    def force_refresh_data(self):
-        """Ping + Đòi nợ toàn bộ danh sách cảm biến (Dùng khi xe đỗ/ngủ)"""
-        self.ping_vehicle()
-        
-        active_dict = BASE_SENSORS.copy()
-        if self.vehicle_model_display == "VF 3": active_dict.update(VF3_SENSORS)
-        elif self.vehicle_model_display in ["VF 5", "VF 6", "VF 7"]: active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS)
-        elif self.vehicle_model_display in ["VF 8", "VF 9"]: active_dict.update(VF89_SENSORS)
-        else: active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS), active_dict.update(VF89_SENSORS)
-
-        payload = [{"objectId": str(int(k.split("_")[0])), "instanceId": str(int(k.split("_")[1])), "resourceId": str(int(k.split("_")[2]))} for k in active_dict.keys() if "_" in k and not k.startswith("api_")]
-
-        res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", payload)
-        if res and res.status_code == 404:
-            self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", payload)
+            request_objects = [
+                {
+                    "objectId": str(int(k.split("_")[0])), 
+                    "instanceId": str(int(k.split("_")[1])), 
+                    "resourceId": str(int(k.split("_")[2]))
+                } 
+                for k in active_dict.keys() if "_" in k and not k.startswith("api_")
+            ]
+            
+            self._post_api("ccaraccessmgmt/api/v1/telemetry/app/ping", [])
+            res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", request_objects)
+            if res and res.status_code == 404:
+                self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", request_objects)
+                
+            _LOGGER.info(f"VinFast: Đã gửi giả lập App lấy dữ liệu thành công.")
+        except Exception as e:
+            pass
 
     def fetch_charging_history(self):
         try:
-            res = self._post_api("ccarcharging/api/v1/charging-sessions/search?page=0&size=100", {"orderStatus": [3, 5, 7]})
-            if res and res.status_code == 200:
+            method, api_path = "POST", "ccarcharging/api/v1/charging-sessions/search"
+            all_sessions = []
+            page, size = 0, 50 
+            
+            while self._running:
+                ts = int(time.time() * 1000)
+                headers = self._get_base_headers()
+                headers.update({
+                    "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), 
+                    "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), 
+                    "X-TIMESTAMP": str(ts)
+                })
+                
+                payload = {
+                    "orderStatus": [3, 5, 7],
+                    "startTime": 1609459200000, 
+                    "endTime": int(time.time() * 1000)
+                }
+                
+                res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json=payload, timeout=15)
+                if res.status_code == 401:
+                    self.login() 
+                    continue
+                if res.status_code != 200: break
+                    
                 data = res.json()
-                sessions = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("data", {}).get("content", []) if isinstance(data.get("data"), dict) else data.get("content", []))
+                sessions = []
+                if isinstance(data.get("data"), list): sessions = data["data"]
+                elif isinstance(data.get("data"), dict) and "content" in data["data"]: sessions = data["data"]["content"]
+                elif "content" in data: sessions = data["content"]
+                    
+                if not sessions: break
+                all_sessions.extend(sessions)
+                if len(sessions) < size: break
+                page += 1
+                time.sleep(0.5) 
                 
-                unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in sessions}
-                t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
-                t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
-                
-                self._last_data["api_total_charge_sessions"] = t_sessions
-                self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
-                self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
-                if self.callbacks:
-                    for cb in self.callbacks: cb(self._last_data)
+            unique_sessions = {s.get("id") or f"noid_{s.get('pluggedTime')}": s for s in all_sessions}
+            t_sessions = sum(1 for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0)
+            t_kwh = sum(safe_float(s.get("totalKWCharged", 0)) for s in unique_sessions.values())
+            
+            self._last_data["api_total_charge_sessions"] = t_sessions
+            self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
+            self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
+            self._calculate_advanced_stats()
+            
+            if self.callbacks:
+                for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
@@ -234,61 +311,58 @@ class VinFastAPI:
         return f"wss://{IOT_ENDPOINT}/mqtt?{qs}&X-Amz-Signature={sig}&X-Amz-Security-Token={urllib.parse.quote(creds['SessionToken'], safe='')}"
 
     def _api_polling_loop(self):
-        last_refresh_time = 0
+        last_sync_time = 0
         last_charge_history_time = 0
         last_aws_token_time = time.time()
         
-        # Bắt buộc kéo full dữ liệu ở giây thứ 0 khi mới chạy HA
+        time.sleep(3) 
         if self.client:
-            self.force_refresh_data()
+            self.register_resources()
+            last_sync_time = time.time()
+            self.fetch_charging_history()
+            last_charge_history_time = time.time()
 
         while self._running:
             try:
+                time.sleep(1)
                 current_time = time.time()
                 
-                # Quét Lịch sử sạc (Mỗi 60 phút)
+                # 1. Cập nhật lịch sử sạc mỗi 1 giờ
                 if current_time - last_charge_history_time >= 3600:
                     self.fetch_charging_history()
-                    last_charge_history_time = time.time()
+                    last_charge_history_time = current_time
 
-                # Làm mới Token AWS (Mỗi 12 giờ)
+                # 2. Refresh Token AWS mỗi 12 giờ
                 if current_time - last_aws_token_time >= 43200:
                     self.login()
                     self._register_device_trust()
                     new_url = self._get_aws_mqtt_url()
                     self.client.ws_set_options(path=new_url.split(IOT_ENDPOINT)[1])
                     self.client.reconnect()
-                    last_aws_token_time = time.time()
+                    last_aws_token_time = current_time
 
-                # LOGIC LẮNG NGHE THỤ ĐỘNG (PASSIVE LISTENING)
-                time_since_moved = current_time - self._last_moved_time
+                # 3. THUẬT TOÁN SMART POLLING (STATE MACHINE)
                 time_since_activity = current_time - self._last_activity_time
 
                 if self._is_moving:
-                    # Xe ĐANG CHẠY: T-Box tự đẩy dữ liệu siêu tốc. KHÔNG ĐƯỢC SPAM API "list_resource" để tránh lỗi 429.
-                    # Chỉ gửi Ping giữ kết nối mỗi 5 phút.
-                    poll_interval = 300 
-                elif time_since_activity < 120:
-                    # Xe vừa có thao tác (mở cửa/đóng cốp) -> T-Box đang thức. Gửi Ping để duy trì thức.
-                    poll_interval = 120
-                elif time_since_moved < 1800:
-                    # Xe đỗ dưới 30p: Ép kéo dữ liệu mỗi 5 phút
-                    poll_interval = 300
+                    # Xe đang di chuyển: Chỉ nghe MQTT, không bắn API giả lập app nữa
+                    poll_interval = 999999 
+                elif time_since_activity < 300:
+                    # Xe đang có tương tác (Cửa mở, khóa xe, cắm sạc... trong 5 phút qua): 
+                    # Đẩy tốc độ lấy dữ liệu lên cao (60s/lần) để đảm bảo Real-time tuyệt đối
+                    poll_interval = 60
                 else:
-                    # Xe đỗ lâu: Ngủ sâu, mỗi 15 phút gọi 1 lần bảo vệ bình 12V
+                    # Xe đỗ im lìm trên 5 phút: Ngủ sâu, 15 phút (900s) mới gọi dậy 1 lần để tiết kiệm ắc quy
                     poll_interval = 900
 
-                # Xử lý bắn tín hiệu Wake-up
-                if current_time - last_refresh_time >= poll_interval:
-                    if self.client and self.client.is_connected():
-                        if self._is_moving:
-                            self.ping_vehicle() # Chỉ gõ cửa nhẹ
-                        else:
-                            self.force_refresh_data() # Bắt nôn hết dữ liệu
-                        last_refresh_time = time.time()
-
-            except Exception: pass
-            time.sleep(1) # Vòng lặp nhỏ để không ăn CPU và nhận tín hiệu ngắt liên tục
+                # Kiểm tra xem đã đến giờ phải lấy dữ liệu chưa
+                if current_time - last_sync_time >= poll_interval:
+                    if self.client and self.client.is_connected() and not self._is_moving:
+                        self.register_resources()
+                        last_sync_time = current_time
+                        
+            except Exception as e: 
+                pass
 
     def start_mqtt(self):
         if self._running: return
@@ -328,30 +402,25 @@ class VinFastAPI:
                 if key and val is not None: data_dict[key] = val
             
             if data_dict:
-                # Có tín hiệu từ xe là Reset bộ đếm Activity
-                self._last_activity_time = time.time() 
+                # KÍCH HOẠT REAL-TIME: Xe vừa có tác động báo lên MQTT -> Reset lại thời gian ngủ!
+                self._last_activity_time = time.time()
                 
                 self._last_data.update(data_dict)
+                self._calculate_advanced_stats()
                 
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
                 gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
                 
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
-                if odo == 0: 
-                    odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
+                if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
                 
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
-                # Số 1 = P, Số 4 = D, Số 2 = R
                 self._is_moving = (speed > 0) or (gear not in ["1", 1]) 
-                if self._is_moving:
-                    self._last_moved_time = time.time()
-                    self._last_data["api_vehicle_status"] = "Đang di chuyển"
-                else:
-                    self._last_data["api_vehicle_status"] = "Đang đỗ"
+                if self._is_moving: self._last_data["api_vehicle_status"] = "Đang di chuyển"
+                else: self._last_data["api_vehicle_status"] = "Đang đỗ"
 
-                # THUẬT TOÁN TRIP CHUẨN: Reset ODO gốc khi chuyển từ P sang số khác (D/R)
                 if gear != "1" and self._last_gear == "1" and odo > 0:
                     self._trip_start_odo = odo 
                 self._last_gear = gear
@@ -359,7 +428,6 @@ class VinFastAPI:
                 if self._trip_start_odo is not None and odo >= self._trip_start_odo:
                     trip_dist = odo - self._trip_start_odo
                     self._last_data["api_trip_distance"] = round(trip_dist, 1)
-                    
                     if self.gas_km_per_liter > 0:
                         self._last_data["api_trip_gas_cost"] = round((trip_dist / self.gas_km_per_liter) * self.gas_price, 0)
                     self._last_data["api_trip_charge_cost"] = round(trip_dist * self.ev_kwh_per_km * self.cost_per_kwh, 0)
