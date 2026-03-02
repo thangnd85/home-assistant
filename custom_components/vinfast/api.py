@@ -41,20 +41,8 @@ class VinFastAPI:
         self._last_data = {
             "api_vehicle_status": "Đang khởi động...",
             "api_current_address": "Đang kết nối...",
-            "api_trip_distance": 0.0,
-            "api_trip_charge_cost": 0,
-            "api_trip_gas_cost": 0,
-            "api_total_gas_cost": 0,
-            "api_total_charge_cost_est": 0,
-            "api_total_charge_sessions": 0,
-            "api_total_energy_charged": 0,
-            "api_static_capacity": 0.0,
-            "api_static_range": 0.0,
-            "api_battery_degradation": 0.0,
-            "api_lifetime_efficiency": 0.0,
         }  
         
-        # Mặc định khởi tạo (Sẽ bị ghi đè khi xe được định danh)
         self.cost_per_kwh = safe_float(self.options.get("cost_per_kwh", 4000), 4000)
         self.gas_price = safe_float(self.options.get("gas_price", 20000), 20000)
         self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", 0.15), 0.15)
@@ -62,10 +50,14 @@ class VinFastAPI:
 
         self._timer_counter = 0 
         self._is_moving = False
-        self._trip_start_odo = None
         self._last_gear = "1"
         self._last_lat_lon = None
         self._last_activity_time = time.time()
+        
+        # --- BIẾN PHÂN TÍCH CHUYẾN ĐI (TRIP ANALYTICS) ---
+        self._trip_start_odo = None
+        self._trip_start_time = None
+        self._trip_start_soc = None
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
@@ -90,9 +82,8 @@ class VinFastAPI:
         return self.access_token
 
     def _update_dynamic_costs(self):
-        """Hàm thông minh tự động gán thông số Xăng/Điện theo Model xe nếu người dùng không tự thiết lập"""
         model = self.vehicle_model_display.upper()
-        target_spec = {"ev_kwh_per_km": 0.15, "gas_km_per_liter": 15.0} # Fallback chung
+        target_spec = {"ev_kwh_per_km": 0.15, "gas_km_per_liter": 15.0} 
         
         for k, v in VEHICLE_SPECS.items():
             if k.replace(" ", "") in model.replace(" ", ""):
@@ -102,14 +93,11 @@ class VinFastAPI:
         fallback_ev = target_spec.get("ev_kwh_per_km", 0.15)
         fallback_gas = target_spec.get("gas_km_per_liter", 15.0)
         
-        # Ưu tiên: 1. Thông số người dùng cấu hình -> 2. Thông số động theo xe
         ev_opt = self.options.get("ev_kwh_per_km")
         self.ev_kwh_per_km = fallback_ev if ev_opt is None else safe_float(ev_opt, fallback_ev)
             
         gas_opt = self.options.get("gas_km_per_liter")
         self.gas_km_per_liter = fallback_gas if gas_opt is None else safe_float(gas_opt, fallback_gas)
-        
-        _LOGGER.debug(f"VinFast: Đã áp dụng tiêu hao Điện: {self.ev_kwh_per_km} kWh/km | Tiêu hao Xăng tương đương: {self.gas_km_per_liter} km/L")
 
     def get_vehicles(self):
         url = f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle"
@@ -128,7 +116,7 @@ class VinFastAPI:
             self._last_data["api_vehicle_name"] = self.vehicle_name
             self._last_data["api_vehicle_model"] = self.vehicle_model_display
             
-            self._update_dynamic_costs() # Chạy ngay sau khi nhận diện xe
+            self._update_dynamic_costs() 
             self._calculate_advanced_stats()
             
             if self.callbacks:
@@ -140,7 +128,6 @@ class VinFastAPI:
         payload = {"commandType": command_type, "vinCode": self.vin, "params": params or {}}
         res = self._post_api("ccaraccessmgmt/api/v2/remote/app/command", payload)
         if res and res.status_code == 200:
-            _LOGGER.info(f"VinFast: Lệnh {command_type} thành công!")
             return True
         return False
 
@@ -160,18 +147,39 @@ class VinFastAPI:
                 self._last_data["api_static_capacity"] = cap
                 self._last_data["api_static_range"] = ran
                 
+                # Tính độ chai pin SOH thực
                 soh = safe_float(self._last_data.get("34220_00001_00001", 100))
                 if 0 < soh <= 100:
                     lost_kwh = cap * (100 - soh) / 100
                     self._last_data["api_battery_degradation"] = round(lost_kwh, 2)
                     
+                # Tính Hiệu suất (kWh/100km)
                 total_kwh = self._last_data.get("api_total_energy_charged", 0)
                 odo = safe_float(self._last_data.get("34183_00001_00003", 0))
                 if odo == 0: odo = safe_float(self._last_data.get("34199_00000_00000", 0))
                 
+                eff = 0
                 if total_kwh > 0 and odo > 0:
-                    efficiency = (total_kwh / odo) * 100
-                    self._last_data["api_lifetime_efficiency"] = round(efficiency, 2)
+                    eff = (total_kwh / odo) * 100
+                    self._last_data["api_lifetime_efficiency"] = round(eff, 2)
+
+                # --- DỰ BÁO QUÃNG ĐƯỜNG (Dựa trên Hiệu suất thực) ---
+                soc = safe_float(self._last_data.get("34183_00001_00009", self._last_data.get("34180_00001_00011", 0)))
+                
+                if eff > 0:
+                    calc_max_range = cap / (eff / 100)
+                    self._last_data["api_calc_max_range"] = round(calc_max_range, 1)
+                    self._last_data["api_calc_range_per_percent"] = round(calc_max_range / 100, 2)
+                    
+                    if soc > 0:
+                        self._last_data["api_calc_remain_range"] = round(calc_max_range * (soc / 100), 1)
+                        
+                    # Tính độ chai pin (Tham khảo qua Max Range)
+                    if ran > 0 and calc_max_range > 0:
+                        deg_range = (1 - (calc_max_range / ran)) * 100
+                        # Cắt biên âm nếu đi quá tiết kiệm
+                        self._last_data["api_est_range_degradation"] = max(round(deg_range, 2), 0.0)
+
         except Exception as e:
             pass
 
@@ -254,8 +262,7 @@ class VinFastAPI:
             res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", request_objects)
             if res and res.status_code == 404:
                 self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", request_objects)
-        except Exception as e:
-            pass
+        except Exception: pass
 
     def fetch_charging_history(self):
         try:
@@ -299,8 +306,40 @@ class VinFastAPI:
             self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
             self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
             
+            # --- PHÂN TÍCH LẦN SẠC CUỐI (CHARGING ANALYTICS) ---
+            valid_sessions = [s for s in unique_sessions.values() if safe_float(s.get("totalKWCharged", 0)) > 0]
+            if valid_sessions:
+                sorted_sessions = sorted(valid_sessions, key=lambda x: safe_float(x.get("pluggedTime", 0)), reverse=True)
+                last_session = sorted_sessions[0]
+                
+                start_soc = safe_float(last_session.get("startBatteryLevel", 0))
+                end_soc = safe_float(last_session.get("endBatteryLevel", 0))
+                energy_grid = safe_float(last_session.get("totalKWCharged", 0))
+                
+                self._last_data["api_last_charge_start_soc"] = start_soc
+                self._last_data["api_last_charge_end_soc"] = end_soc
+                self._last_data["api_last_charge_energy"] = round(energy_grid, 2)
+                
+                p_time = safe_float(last_session.get("pluggedTime", 0))
+                u_time = safe_float(last_session.get("unpluggedTime", 0))
+                duration_min = 0
+                if u_time > p_time:
+                    duration_min = (u_time - p_time) / 60000
+                    self._last_data["api_last_charge_duration"] = round(duration_min, 0)
+                    
+                # 1. Tính Công suất sạc trung bình (kW)
+                if duration_min > 0:
+                    self._last_data["api_last_charge_power"] = round((energy_grid / (duration_min / 60)), 1)
+                
+                # 2. Tính Hiệu suất sạc (% điện chui vào pin so với điện từ trụ)
+                cap = safe_float(self._last_data.get("api_static_capacity", 0))
+                if cap > 0 and energy_grid > 0:
+                    energy_added_to_battery = ((end_soc - start_soc) / 100.0) * cap
+                    if energy_added_to_battery > 0:
+                        charge_eff = (energy_added_to_battery / energy_grid) * 100
+                        self._last_data["api_last_charge_efficiency"] = min(round(charge_eff, 1), 100.0)
+
             self._calculate_advanced_stats()
-            
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
@@ -407,7 +446,6 @@ class VinFastAPI:
             
             if data_dict:
                 self._last_activity_time = time.time()
-                
                 self._last_data.update(data_dict)
                 self._calculate_advanced_stats()
                 
@@ -416,6 +454,7 @@ class VinFastAPI:
                 
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
                 if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
+                current_soc = safe_float(data_dict.get("34183_00001_00009", data_dict.get("34180_00001_00011", 0)))
                 
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
@@ -424,16 +463,34 @@ class VinFastAPI:
                 if self._is_moving: self._last_data["api_vehicle_status"] = "Đang di chuyển"
                 else: self._last_data["api_vehicle_status"] = "Đang đỗ"
 
+                # --- LƯU TRỮ VÀ TÍNH TOÁN TRIP ANALYTICS KHI SANG SỐ ---
                 if gear != "1" and self._last_gear == "1" and odo > 0:
                     self._trip_start_odo = odo 
+                    self._trip_start_time = time.time()
+                    self._trip_start_soc = current_soc
                 self._last_gear = gear
 
                 if self._trip_start_odo is not None and odo >= self._trip_start_odo:
                     trip_dist = odo - self._trip_start_odo
                     self._last_data["api_trip_distance"] = round(trip_dist, 1)
+                    
                     if self.gas_km_per_liter > 0:
                         self._last_data["api_trip_gas_cost"] = round((trip_dist / self.gas_km_per_liter) * self.gas_price, 0)
                     self._last_data["api_trip_charge_cost"] = round(trip_dist * self.ev_kwh_per_km * self.cost_per_kwh, 0)
+                    
+                    # Tính Vận tốc trung bình
+                    if self._trip_start_time and self._trip_start_time > 0:
+                        trip_hrs = (time.time() - self._trip_start_time) / 3600.0
+                        if trip_hrs > 0 and trip_dist > 0:
+                            self._last_data["api_trip_avg_speed"] = round(trip_dist / trip_hrs, 1)
+
+                    # Tính Hiệu suất tiêu thụ của riêng chuyến đi này
+                    if self._trip_start_soc is not None and self._trip_start_soc >= current_soc and trip_dist > 0:
+                        cap = safe_float(self._last_data.get("api_static_capacity", 0))
+                        if cap > 0:
+                            energy_used = ((self._trip_start_soc - current_soc) / 100.0) * cap
+                            self._last_data["api_trip_energy_used"] = round(energy_used, 2)
+                            self._last_data["api_trip_efficiency"] = round((energy_used / trip_dist) * 100, 2)
 
                 lat = data_dict.get("00006_00001_00000")
                 lon = data_dict.get("00006_00001_00001")
