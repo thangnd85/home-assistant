@@ -54,17 +54,17 @@ class VinFastAPI:
             "api_lifetime_efficiency": 0.0,
         }  
         
+        # Mặc định khởi tạo (Sẽ bị ghi đè khi xe được định danh)
         self.cost_per_kwh = safe_float(self.options.get("cost_per_kwh", 4000), 4000)
-        self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", 0.12), 0.12)
         self.gas_price = safe_float(self.options.get("gas_price", 20000), 20000)
-        self.gas_km_per_liter = safe_float(self.options.get("gas_km_per_liter", 20.0), 20.0)
+        self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", 0.15), 0.15)
+        self.gas_km_per_liter = safe_float(self.options.get("gas_km_per_liter", 15.0), 15.0)
 
+        self._timer_counter = 0 
         self._is_moving = False
         self._trip_start_odo = None
         self._last_gear = "1"
         self._last_lat_lon = None
-        
-        # Biến đánh dấu thời gian hoạt động cuối cùng của xe để kích hoạt Real-time
         self._last_activity_time = time.time()
 
     def add_callback(self, cb):
@@ -89,6 +89,28 @@ class VinFastAPI:
         self.access_token = res.json()["access_token"]
         return self.access_token
 
+    def _update_dynamic_costs(self):
+        """Hàm thông minh tự động gán thông số Xăng/Điện theo Model xe nếu người dùng không tự thiết lập"""
+        model = self.vehicle_model_display.upper()
+        target_spec = {"ev_kwh_per_km": 0.15, "gas_km_per_liter": 15.0} # Fallback chung
+        
+        for k, v in VEHICLE_SPECS.items():
+            if k.replace(" ", "") in model.replace(" ", ""):
+                target_spec = v
+                break
+                
+        fallback_ev = target_spec.get("ev_kwh_per_km", 0.15)
+        fallback_gas = target_spec.get("gas_km_per_liter", 15.0)
+        
+        # Ưu tiên: 1. Thông số người dùng cấu hình -> 2. Thông số động theo xe
+        ev_opt = self.options.get("ev_kwh_per_km")
+        self.ev_kwh_per_km = fallback_ev if ev_opt is None else safe_float(ev_opt, fallback_ev)
+            
+        gas_opt = self.options.get("gas_km_per_liter")
+        self.gas_km_per_liter = fallback_gas if gas_opt is None else safe_float(gas_opt, fallback_gas)
+        
+        _LOGGER.debug(f"VinFast: Đã áp dụng tiêu hao Điện: {self.ev_kwh_per_km} kWh/km | Tiêu hao Xăng tương đương: {self.gas_km_per_liter} km/L")
+
     def get_vehicles(self):
         url = f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle"
         headers = {"Authorization": f"Bearer {self.access_token}", "x-service-name": "CAPP", "x-app-version": "2.17.5", "x-device-platform": "android"}
@@ -106,6 +128,7 @@ class VinFastAPI:
             self._last_data["api_vehicle_name"] = self.vehicle_name
             self._last_data["api_vehicle_model"] = self.vehicle_model_display
             
+            self._update_dynamic_costs() # Chạy ngay sau khi nhận diện xe
             self._calculate_advanced_stats()
             
             if self.callbacks:
@@ -114,16 +137,11 @@ class VinFastAPI:
         return vehicles
 
     def send_remote_command(self, command_type, params=None):
-        payload = {
-            "commandType": command_type,
-            "vinCode": self.vin,
-            "params": params or {}
-        }
+        payload = {"commandType": command_type, "vinCode": self.vin, "params": params or {}}
         res = self._post_api("ccaraccessmgmt/api/v2/remote/app/command", payload)
         if res and res.status_code == 200:
             _LOGGER.info(f"VinFast: Lệnh {command_type} thành công!")
             return True
-        _LOGGER.error(f"VinFast: Lệnh {command_type} thất bại.")
         return False
 
     def _calculate_advanced_stats(self):
@@ -155,7 +173,7 @@ class VinFastAPI:
                     efficiency = (total_kwh / odo) * 100
                     self._last_data["api_lifetime_efficiency"] = round(efficiency, 2)
         except Exception as e:
-            _LOGGER.error(f"VinFast Stats Error: {e}")
+            pass
 
     def _generate_x_hash(self, method, api_path, vin, timestamp_ms, secret_key="Vinfast@2025"):
         path_without_query = api_path.split("?")[0]
@@ -236,8 +254,6 @@ class VinFastAPI:
             res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", request_objects)
             if res and res.status_code == 404:
                 self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", request_objects)
-                
-            _LOGGER.info(f"VinFast: Đã gửi giả lập App lấy dữ liệu thành công.")
         except Exception as e:
             pass
 
@@ -255,14 +271,9 @@ class VinFastAPI:
                     "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), 
                     "X-TIMESTAMP": str(ts)
                 })
-                
-                payload = {
-                    "orderStatus": [3, 5, 7],
-                    "startTime": 1609459200000, 
-                    "endTime": int(time.time() * 1000)
-                }
-                
+                payload = {"orderStatus": [3, 5, 7], "startTime": 1609459200000, "endTime": int(time.time() * 1000)}
                 res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json=payload, timeout=15)
+                
                 if res.status_code == 401:
                     self.login() 
                     continue
@@ -287,6 +298,7 @@ class VinFastAPI:
             self._last_data["api_total_charge_sessions"] = t_sessions
             self._last_data["api_total_energy_charged"] = round(t_kwh, 2)
             self._last_data["api_total_charge_cost_est"] = round(t_kwh * self.cost_per_kwh, 0)
+            
             self._calculate_advanced_stats()
             
             if self.callbacks:
@@ -327,12 +339,10 @@ class VinFastAPI:
                 time.sleep(1)
                 current_time = time.time()
                 
-                # 1. Cập nhật lịch sử sạc mỗi 1 giờ
                 if current_time - last_charge_history_time >= 3600:
                     self.fetch_charging_history()
                     last_charge_history_time = current_time
 
-                # 2. Refresh Token AWS mỗi 12 giờ
                 if current_time - last_aws_token_time >= 43200:
                     self.login()
                     self._register_device_trust()
@@ -341,21 +351,15 @@ class VinFastAPI:
                     self.client.reconnect()
                     last_aws_token_time = current_time
 
-                # 3. THUẬT TOÁN SMART POLLING (STATE MACHINE)
                 time_since_activity = current_time - self._last_activity_time
 
                 if self._is_moving:
-                    # Xe đang di chuyển: Chỉ nghe MQTT, không bắn API giả lập app nữa
                     poll_interval = 999999 
                 elif time_since_activity < 300:
-                    # Xe đang có tương tác (Cửa mở, khóa xe, cắm sạc... trong 5 phút qua): 
-                    # Đẩy tốc độ lấy dữ liệu lên cao (60s/lần) để đảm bảo Real-time tuyệt đối
                     poll_interval = 60
                 else:
-                    # Xe đỗ im lìm trên 5 phút: Ngủ sâu, 15 phút (900s) mới gọi dậy 1 lần để tiết kiệm ắc quy
                     poll_interval = 900
 
-                # Kiểm tra xem đã đến giờ phải lấy dữ liệu chưa
                 if current_time - last_sync_time >= poll_interval:
                     if self.client and self.client.is_connected() and not self._is_moving:
                         self.register_resources()
@@ -402,7 +406,6 @@ class VinFastAPI:
                 if key and val is not None: data_dict[key] = val
             
             if data_dict:
-                # KÍCH HOẠT REAL-TIME: Xe vừa có tác động báo lên MQTT -> Reset lại thời gian ngủ!
                 self._last_activity_time = time.time()
                 
                 self._last_data.update(data_dict)
