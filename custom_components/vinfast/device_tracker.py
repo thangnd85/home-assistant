@@ -16,15 +16,16 @@ class VinFastDeviceTracker(TrackerEntity):
         self.api = api
         self._attr_has_entity_name = True
         self._attr_name = "Vị trí GPS"
-        self._attr_unique_id = f"vinfast_{api.vin}_tracker"
         
-        # =================================================================
-        # CHUẨN HÓA PREFIX: model_vin
-        # Kết quả: device_tracker.vf8_xxx123_vi_tri_gps
         # =================================================================
         model_slug = slugify(getattr(api, "vehicle_model_display", "VF")).replace("_", "")
         vin_slug = api.vin.lower() if api.vin else "unknown"
+        
+        # Ép Unique ID mới
+        self._attr_unique_id = f"{model_slug}_{vin_slug}_tracker"
+        # Ép Entity ID chuẩn
         self.entity_id = f"device_tracker.{model_slug}_{vin_slug}_vi_tri_gps"
+        # =================================================================
 
         veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
