@@ -85,6 +85,7 @@ BASE_SENSORS = {
     "34205_00001_00001": ("Chế độ Giao xe (Valet)", None, "mdi:account-tie-hat", None),
     "34206_00001_00001": ("Chế độ Cắm trại (Camp)", None, "mdi:tent", None),
     "34207_00001_00001": ("Chế độ Thú cưng (Pet)", None, "mdi:paw", None),
+    "api_vehicle_image": ("Hình ảnh xe URL", None, "mdi:image", None),
 }
 
 # =========================================================
@@ -111,6 +112,7 @@ VF3_SENSORS = {
     "34183_00001_00015": ("Nhiệt độ trong xe", "°C", "mdi:thermometer", "temperature"),
     "34224_00001_00005": ("Nhiệt độ điều hòa cài đặt", "°C", "mdi:thermostat", "temperature"),
     "34224_00001_00007": ("Mức quạt gió", None, "mdi:fan", None),
+    
 }
 
 # =========================================================
