@@ -28,15 +28,16 @@ class VinFastButton(ButtonEntity):
         self._attr_has_entity_name = True
         self._attr_name = name
         self._attr_icon = icon
-        self._attr_unique_id = f"vinfast_{api.vin}_btn_{command_key}"
         
-        # =================================================================
-        # CHUẨN HÓA PREFIX: model_vin
-        # Kết quả: button.vf8_xxx123_khoa_cua
         # =================================================================
         model_slug = slugify(getattr(api, "vehicle_model_display", "VF")).replace("_", "")
         vin_slug = api.vin.lower() if api.vin else "unknown"
+        
+        # Ép Unique ID mới
+        self._attr_unique_id = f"{model_slug}_{vin_slug}_btn_{command_key}"
+        # Ép Entity ID chuẩn
         self.entity_id = f"button.{model_slug}_{vin_slug}_{slugify(name)}"
+        # =================================================================
 
         veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
