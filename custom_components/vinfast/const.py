@@ -49,11 +49,12 @@ BASE_SENSORS = {
     "api_calc_max_range": ("Quãng đường thực tế (Đầy 100% pin)", "km", "mdi:map-marker-path", "distance"),
     "api_calc_remain_range": ("Quãng đường còn lại (Theo hiệu suất)", "km", "mdi:map-marker-distance", "distance"),
     "api_calc_range_per_percent": ("Quãng đường đi được mỗi 1% pin", "km", "mdi:ruler", "distance"),
+    "api_best_efficiency_band": ("Dải tốc độ tối ưu nhất", None, "mdi:chart-bell-curve", None),
 
     # --- NHÓM PHÂN TÍCH LẦN SẠC CUỐI (CHARGING ANALYTICS) ---
     "api_last_charge_start_soc": ("% Pin lúc cắm sạc (Lần cuối)", "%", "mdi:battery-arrow-down", "battery"),
     "api_last_charge_end_soc": ("% Pin lúc rút sạc (Lần cuối)", "%", "mdi:battery-arrow-up", "battery"),
-    "api_last_charge_duration": ("Thời gian cắm sạc (Lần cuối)", "phút", "mdi:timer-sand", "duration"),
+    "api_last_charge_duration": ("Thời gian cắm sạc (Lần cuối)", "min", "mdi:timer-sand", "duration"),
     "api_last_charge_energy": ("Điện năng lấy từ lưới (Lần cuối)", "kWh", "mdi:flash", "energy"),
     "api_last_charge_power": ("Công suất sạc trung bình (Lần cuối)", "kW", "mdi:ev-plug-type2", "power"),
     "api_last_charge_efficiency": ("Hiệu suất sạc thực tế (Lần cuối)", "%", "mdi:battery-charging-high", None),
