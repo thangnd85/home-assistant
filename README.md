@@ -69,7 +69,7 @@ Mức tiêu thụ Xăng tham chiếu (km/Lít).
 Kho lưu trữ này chỉ chứa mã nguồn Backend (Core Component) sinh ra các thực thể.
 Để có giao diện Digital Twin mô phỏng xe 3D và các bảng thống kê xịn xò, vui lòng truy cập và cài đặt Custom Card tại kho lưu trữ Frontend của chúng tôi:
 
-👉 [Link dẫn tới GitHub Custom Card của bạn]
+👉 [https://github.com/thangnd85/vinfast-digital-twin-card]
 
 🛡️ Tuyên bố Miễn trừ trách nhiệm (Disclaimer)
 
