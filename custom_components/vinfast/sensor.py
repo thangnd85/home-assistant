@@ -47,18 +47,19 @@ class VinFastSensor(SensorEntity):
         
         self._attr_has_entity_name = True 
         self._attr_name = name 
-        self._attr_unique_id = f"vinfast_{api.vin}_{device_key}"
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
         self._attr_device_class = dev_class
         
         # =================================================================
-        # CHUẨN HÓA PREFIX: model_vin
-        # Ví dụ: vf8_xxx123
+        # THAY ĐỔI CẢ UNIQUE_ID ĐỂ ÉP HA TẠO THỰC THỂ MỚI TINH
         # =================================================================
         model_slug = slugify(getattr(api, "vehicle_model_display", "VF")).replace("_", "")
         vin_slug = api.vin.lower() if api.vin else "unknown"
-        # Kết quả: sensor.vf8_xxx123_phan_tram_pin
+        
+        # Ép Unique ID mới
+        self._attr_unique_id = f"{model_slug}_{vin_slug}_{device_key}"
+        # Ép Entity ID chuẩn
         self.entity_id = f"sensor.{model_slug}_{vin_slug}_{slugify(name)}"
 
         self._attr_native_value = api._last_data.get(device_key)
