@@ -50,7 +50,6 @@ class VinFastSensor(SensorEntity):
         self._attr_icon = icon
         self._attr_device_class = dev_class
         
-        # Thiết lập giá trị an toàn lúc khởi động
         self._attr_native_value = api._last_data.get(device_key)
 
         self._attr_device_info = DeviceInfo(
@@ -64,28 +63,31 @@ class VinFastSensor(SensorEntity):
     def should_poll(self):
         return False
 
+    # HIỂN THỊ CHI TIẾT CÁC DẢI TỐC ĐỘ VÀO THUỘC TÍNH (ATTRIBUTES)
+    @property
+    def extra_state_attributes(self):
+        if self._device_key == "api_best_efficiency_band":
+            attrs = {}
+            stats = getattr(self.api, '_eff_stats', {})
+            for k, v in sorted(stats.items()):
+                if v["drops"] > 0:
+                    eff = v['dist'] / v['drops']
+                    attrs[f"Dải {k} km/h"] = f"{round(eff, 2)} km / 1% (Tổng: {round(v['dist'], 1)}km)"
+            return attrs if attrs else {"Trạng thái": "Đang thu thập dữ liệu di chuyển..."}
+        return None
+
     @callback
     def process_new_data(self, data):
         if self._device_key in data:
             val = data[self._device_key]
-            
-            if val is None:
-                return
+            if val is None: return
 
-            # Cảm biến Tiền tệ (Làm tròn số nguyên)
+            # Làm tròn số tiền
             if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
                 
-            # Cảm biến Hiệu suất và Phân tích sạc (Làm tròn 1-2 chữ số)
-            elif self._device_key in [
-                "api_static_capacity", "api_static_range", "api_battery_degradation", 
-                "api_lifetime_efficiency", "api_calc_max_range", "api_calc_remain_range", 
-                "api_calc_range_per_percent", "api_last_charge_energy"
-            ]:
-                try: val = round(float(val), 2)
-                except (ValueError, TypeError): val = 0
-            # Các cảm biến Toán học, Hiệu suất, Công suất sạc (Làm tròn 1-2 chữ số)
+            # Làm tròn Cảm biến Hiệu suất
             elif self._device_key in [
                 "api_static_capacity", "api_static_range", "api_battery_degradation", 
                 "api_lifetime_efficiency", "api_calc_max_range", "api_calc_remain_range", 
@@ -95,13 +97,13 @@ class VinFastSensor(SensorEntity):
                 "api_trip_energy_used", "api_trip_efficiency"
             ]:
                 try: val = round(float(val), 2)
-                except (ValueError, TypeError): val = 0    
-            # Các cảm biến số nguyên (Thời lượng, % Pin sạc)
+                except (ValueError, TypeError): val = 0
+                
+            # Làm tròn nguyên
             elif self._device_key in ["api_last_charge_duration", "api_last_charge_start_soc", "api_last_charge_end_soc"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
 
-            # Xử lý Trạng thái Đóng / Mở
             elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00003_00050", "10351_00004_00050", "10351_00005_00050", "10351_00006_00050"]:
                 val = "Mở" if str(val) == "1" else "Đóng"
                 
