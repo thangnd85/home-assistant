@@ -28,7 +28,7 @@ Bấm vào biểu tượng 3 chấm ở góc trên cùng bên phải, chọn Cus
 
 Điền các thông tin sau:
 
-Repository: [https://github.com/thangnd85/Vinfast-connected-car]
+Repository: [https://github.com/thangnd85/vinfast-connected-car]
 
 Category: Chọn Integration.
 
