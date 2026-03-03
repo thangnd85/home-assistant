@@ -125,6 +125,14 @@ class VinFastAPI:
             self.user_id = str(v.get("userId", ""))
             if not self.vin: self.vin = v.get("vinCode", "")
             self.vehicle_name = v.get("customizedVehicleName") or v.get("vehicleName") or "Xe VinFast"
+            self.vehicle_name = v.get("customizedVehicleName") or v.get("vehicleName") or "Xe VinFast"
+            self.vehicle_model_display = v.get("marketingName") or v.get("dmsVehicleModel") or "VF"
+            
+            # --- THÊM DÒNG NÀY ĐỂ LẤY ẢNH TỪ REST API ---
+            self._last_data["api_vehicle_image"] = v.get("vehicleImage") or v.get("avatarUrl") or ""
+            # --------------------------------------------
+            
+            self._last_data["api_vehicle_name"] = self.vehicle_name
             self.vehicle_model_display = v.get("marketingName") or v.get("dmsVehicleModel") or "VF"
             
             self._last_data["api_vehicle_name"] = self.vehicle_name
