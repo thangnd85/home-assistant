@@ -320,12 +320,14 @@ class VinFastAPI:
             if valid_sessions:
                 sorted_sessions = sorted(valid_sessions, key=lambda x: safe_float(x.get("pluggedTime", 0)), reverse=True)
                 last_session = sorted_sessions[0]
-                start_soc = safe_float(last_session.get("startBatteryLevel", 0))
-                end_soc = safe_float(last_session.get("endBatteryLevel", 0))
-                energy_grid = safe_float(last_session.get("totalKWCharged", 0))
                 
-                self._last_data["api_last_charge_start_soc"] = start_soc
-                self._last_data["api_last_charge_end_soc"] = end_soc
+                # API Backend có thể bị mất dữ liệu Start/End. Nên chỉ cập nhật nếu nó > 0
+                start_soc_api = safe_float(last_session.get("startBatteryLevel", 0))
+                end_soc_api = safe_float(last_session.get("endBatteryLevel", 0))
+                if start_soc_api > 0: self._last_data["api_last_charge_start_soc"] = start_soc_api
+                if end_soc_api > 0: self._last_data["api_last_charge_end_soc"] = end_soc_api
+
+                energy_grid = safe_float(last_session.get("totalKWCharged", 0))
                 self._last_data["api_last_charge_energy"] = round(energy_grid, 2)
                 
                 p_time = safe_float(last_session.get("pluggedTime", 0))
@@ -339,7 +341,10 @@ class VinFastAPI:
                 
                 cap = safe_float(self._last_data.get("api_static_capacity", 0))
                 if cap > 0 and energy_grid > 0:
-                    energy_added_to_battery = ((end_soc - start_soc) / 100.0) * cap
+                    # Dùng start/end soc mới nhất có được (từ MQTT hoặc API) để tính hiệu suất
+                    cur_start = safe_float(self._last_data.get("api_last_charge_start_soc", 0))
+                    cur_end = safe_float(self._last_data.get("api_last_charge_end_soc", 0))
+                    energy_added_to_battery = ((cur_end - cur_start) / 100.0) * cap
                     if energy_added_to_battery > 0:
                         charge_eff = (energy_added_to_battery / energy_grid) * 100
                         self._last_data["api_last_charge_efficiency"] = min(round(charge_eff, 1), 100.0)
@@ -350,6 +355,7 @@ class VinFastAPI:
         except Exception: pass
 
     def _delayed_fetch_charging_history(self):
+        _LOGGER.info("VinFast: Đang đợi 60s để máy chủ chốt hóa đơn sạc...")
         time.sleep(60)
         self.fetch_charging_history()
 
@@ -499,15 +505,25 @@ class VinFastAPI:
                 self._last_data.update(data_dict)
                 current_soc = safe_float(data_dict.get("34183_00001_00009", data_dict.get("34180_00001_00011", self._last_data.get("34183_00001_00009", 0))))
                 
-                # --- PHÂN TÍCH SẠC PIN ---
+                # =========================================================
+                # 1. BẮT SỰ KIỆN CẮM SẠC / RÚT SẠC REAL-TIME TỪ MQTT
+                # =========================================================
                 c_status_1 = str(data_dict.get("34193_00001_00005", self._last_data.get("34193_00001_00005", "0")))
                 c_status_2 = str(data_dict.get("34183_00000_00001", self._last_data.get("34183_00000_00001", "0")))
                 self._is_charging = (c_status_1 == "1") or (c_status_2 == "1")
 
                 if self._is_charging and not self._last_is_charging:
+                    # Chốt sổ Start SOC ngay giây phút có cắm sạc
+                    self._last_data["api_last_charge_start_soc"] = current_soc
+                    _LOGGER.info(f"VinFast: [MQTT] Sự kiện cắm sạc! Chốt PIN Bắt đầu: {current_soc}%")
                     self._last_is_charging = True
+                    
                 elif not self._is_charging and self._last_is_charging:
+                    # Chốt sổ End SOC ngay giây phút rút sạc
+                    self._last_data["api_last_charge_end_soc"] = current_soc
+                    _LOGGER.info(f"VinFast: [MQTT] Sự kiện dừng sạc! Chốt PIN Kết thúc: {current_soc}%")
                     self._last_is_charging = False
+                    # Trigger luồng ngầm đi lấy API hóa đơn sau 60s
                     threading.Thread(target=self._delayed_fetch_charging_history, daemon=True).start()
 
                 self._calculate_advanced_stats()
@@ -517,7 +533,9 @@ class VinFastAPI:
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
                 if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
                 
-                # --- PHÂN TÍCH DẢI TỐC ĐỘ TỐI ƯU KHI ĐANG CHẠY (SMART PROFILING) ---
+                # =========================================================
+                # 2. PHÂN TÍCH DẢI TỐC ĐỘ TỐI ƯU KHI ĐANG CHẠY (SMART PROFILING)
+                # =========================================================
                 if odo > 0 and current_soc > 0:
                     if getattr(self, '_eff_soc', None) is None or current_soc > self._eff_soc:
                         self._eff_soc = current_soc
@@ -556,11 +574,9 @@ class VinFastAPI:
                                 if best_eff > 0:
                                     self._last_data["api_best_efficiency_band"] = f"{best_band} km/h ({round(best_eff, 2)} km/1%)"
                                     
-                        # Reset vòng mới
                         self._eff_soc = current_soc
                         self._eff_odo = odo
                         self._eff_speeds = []
-                # -----------------------------------------------------------------
 
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
@@ -570,7 +586,9 @@ class VinFastAPI:
                 elif self._is_charging: self._last_data["api_vehicle_status"] = "Đang sạc"
                 else: self._last_data["api_vehicle_status"] = "Đang đỗ"
 
-                # --- CHUYẾN ĐI (TRIP 30 PHÚT) ---
+                # =========================================================
+                # 3. CHUYẾN ĐI (TRIP 30 PHÚT)
+                # =========================================================
                 if self._is_moving:
                     self._last_move_time = current_time
 
