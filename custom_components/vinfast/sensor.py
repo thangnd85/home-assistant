@@ -63,17 +63,22 @@ class VinFastSensor(SensorEntity):
     def should_poll(self):
         return False
 
-    # HIỂN THỊ CHI TIẾT CÁC DẢI TỐC ĐỘ VÀO THUỘC TÍNH (ATTRIBUTES)
     @property
     def extra_state_attributes(self):
         if self._device_key == "api_best_efficiency_band":
             attrs = {}
             stats = getattr(self.api, '_eff_stats', {})
-            for k, v in sorted(stats.items()):
+            try:
+                # Sắp xếp các dải tốc độ từ thấp lên cao (10-20, 20-30...)
+                sorted_stats = dict(sorted(stats.items(), key=lambda item: int(item[0].split('-')[0])))
+            except:
+                sorted_stats = stats
+                
+            for k, v in sorted_stats.items():
                 if v["drops"] > 0:
                     eff = v['dist'] / v['drops']
-                    attrs[f"Dải {k} km/h"] = f"{round(eff, 2)} km / 1% (Tổng: {round(v['dist'], 1)}km)"
-            return attrs if attrs else {"Trạng thái": "Đang thu thập dữ liệu di chuyển..."}
+                    attrs[f"Dải {k} km/h"] = f"{round(eff, 2)} km/1% (Đã phân tích {round(v['dist'], 1)}km)"
+            return attrs if attrs else {"Trạng thái": "Hệ thống đang đợi % pin sụt giảm để đếm xung MQTT..."}
         return None
 
     @callback
@@ -82,12 +87,10 @@ class VinFastSensor(SensorEntity):
             val = data[self._device_key]
             if val is None: return
 
-            # Làm tròn số tiền
             if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
                 
-            # Làm tròn Cảm biến Hiệu suất
             elif self._device_key in [
                 "api_static_capacity", "api_static_range", "api_battery_degradation", 
                 "api_lifetime_efficiency", "api_calc_max_range", "api_calc_remain_range", 
@@ -99,7 +102,6 @@ class VinFastSensor(SensorEntity):
                 try: val = round(float(val), 2)
                 except (ValueError, TypeError): val = 0
                 
-            # Làm tròn nguyên
             elif self._device_key in ["api_last_charge_duration", "api_last_charge_start_soc", "api_last_charge_end_soc"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
