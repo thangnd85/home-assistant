@@ -54,6 +54,7 @@ class VinFastAPI:
         self.ev_kwh_per_km = safe_float(self.options.get("ev_kwh_per_km", 0.15), 0.15)
         self.gas_km_per_liter = safe_float(self.options.get("gas_km_per_liter", 15.0), 15.0)
 
+        # Trạng thái thiết yếu
         self._is_moving = False
         self._is_charging = False
         self._last_is_charging = False 
@@ -63,12 +64,18 @@ class VinFastAPI:
         self._last_activity_time = time.time()
         self._force_full_scan = False
         
-        # --- BIẾN QUẢN LÝ CHUYẾN ĐI (TRIP THÔNG MINH) ---
+        # Biến quản lý Trip 30 phút
         self._is_trip_active = False
         self._last_move_time = time.time()
         self._trip_start_odo = None
         self._trip_start_time = None
         self._trip_start_soc = None
+        
+        # Biến phân tích Smart Profiling (Dải tốc độ)
+        self._eff_soc = None
+        self._eff_odo = None
+        self._eff_speeds = []
+        self._eff_stats = {}
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
@@ -239,15 +246,13 @@ class VinFastAPI:
         return f"{lat}, {lon}"
 
     def _update_location_async(self, lat, lon):
-        """Hàm chạy ngầm để lấy địa chỉ không làm đứng hình MQTT"""
         try:
             addr = self.get_address_from_osm(lat, lon)
             if addr:
                 self._last_data["api_current_address"] = addr
                 if self.callbacks:
                     for cb in self.callbacks: cb(self._last_data)
-        except Exception as e:
-            _LOGGER.error(f"VinFast: Lỗi lấy địa chỉ OSM: {e}")
+        except Exception: pass
 
     def register_resources(self):
         try:
@@ -272,8 +277,7 @@ class VinFastAPI:
                 self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", request_objects)
                 
             _LOGGER.info(f"VinFast: [Giả lập App] Đã bắn API đánh thức T-Box thành công.")
-        except Exception as e:
-            pass
+        except Exception: pass
 
     def fetch_charging_history(self):
         try:
@@ -343,8 +347,7 @@ class VinFastAPI:
             self._calculate_advanced_stats()
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
-        except Exception as e:
-            pass
+        except Exception: pass
 
     def _delayed_fetch_charging_history(self):
         time.sleep(60)
@@ -361,7 +364,7 @@ class VinFastAPI:
         }
         try: 
             self.client.publish(topic, json.dumps(payload), qos=1)
-        except Exception as e: pass
+        except Exception: pass
 
     def _get_aws_mqtt_url(self):
         res_id = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetId"}, json={"IdentityPoolId": COGNITO_POOL_ID, "Logins": {AUTH0_DOMAIN: self.access_token}}, timeout=15)
@@ -370,7 +373,7 @@ class VinFastAPI:
         creds = creds_res.json()["Credentials"]
         try:
             requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id}, timeout=15)
-        except Exception as e: pass
+        except Exception: pass
 
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
         amz_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -394,7 +397,7 @@ class VinFastAPI:
                 self.client.connect(IOT_ENDPOINT, 443, 60)
                 self.client.loop_start()
                 self.register_resources()
-        except Exception as e: pass
+        except Exception: pass
 
     def _api_polling_loop(self):
         start_time = time.time()
@@ -405,6 +408,7 @@ class VinFastAPI:
         
         time.sleep(3) 
         if self.client:
+            _LOGGER.info("VinFast: [Khởi động] Đang thực hiện giả lập mở App lần đầu...")
             self.register_resources()
             self.fetch_charging_history()
 
@@ -462,6 +466,7 @@ class VinFastAPI:
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0: 
+            _LOGGER.info("VinFast: [MQTT] Đã kết nối AWS IoT.")
             client.subscribe(f"/mobile/{self.vin}/push", qos=1)
             client.subscribe(f"monitoring/server/{self.vin}/push", qos=1)
             client.subscribe(f"/server/{self.vin}/remctrl", qos=1)
@@ -494,7 +499,7 @@ class VinFastAPI:
                 self._last_data.update(data_dict)
                 current_soc = safe_float(data_dict.get("34183_00001_00009", data_dict.get("34180_00001_00011", self._last_data.get("34183_00001_00009", 0))))
                 
-                # Trạng thái Sạc
+                # --- PHÂN TÍCH SẠC PIN ---
                 c_status_1 = str(data_dict.get("34193_00001_00005", self._last_data.get("34193_00001_00005", "0")))
                 c_status_2 = str(data_dict.get("34183_00000_00001", self._last_data.get("34183_00000_00001", "0")))
                 self._is_charging = (c_status_1 == "1") or (c_status_2 == "1")
@@ -507,34 +512,73 @@ class VinFastAPI:
 
                 self._calculate_advanced_stats()
                 
-                # Trạng thái Di chuyển
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
                 gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
                 odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
                 if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
                 
+                # --- PHÂN TÍCH DẢI TỐC ĐỘ TỐI ƯU KHI ĐANG CHẠY (SMART PROFILING) ---
+                if odo > 0 and current_soc > 0:
+                    if getattr(self, '_eff_soc', None) is None or current_soc > self._eff_soc:
+                        self._eff_soc = current_soc
+                        self._eff_odo = odo
+                        self._eff_speeds = []
+                        
+                    if speed > 0:
+                        self._eff_speeds.append(speed)
+                        
+                    if current_soc < self._eff_soc:
+                        drop_amount = self._eff_soc - current_soc
+                        if getattr(self, '_eff_odo', None) is not None and len(self._eff_speeds) > 0:
+                            dist = odo - self._eff_odo
+                            if dist > 0:
+                                sorted_speeds = sorted(self._eff_speeds)
+                                median_speed = sorted_speeds[len(sorted_speeds) // 2]
+                                band_lower = int(median_speed / 10) * 10
+                                band_key = f"{band_lower}-{band_lower+10}"
+                                
+                                if not hasattr(self, '_eff_stats'):
+                                    self._eff_stats = {}
+                                if band_key not in self._eff_stats:
+                                    self._eff_stats[band_key] = {"dist": 0.0, "drops": 0.0}
+                                    
+                                self._eff_stats[band_key]["dist"] += dist
+                                self._eff_stats[band_key]["drops"] += drop_amount
+                                
+                                best_band = "Đang thu thập..."
+                                best_eff = 0
+                                for k, v in self._eff_stats.items():
+                                    if v["drops"] > 0:
+                                        eff = v["dist"] / v["drops"]
+                                        if eff > best_eff:
+                                            best_eff = eff
+                                            best_band = k
+                                if best_eff > 0:
+                                    self._last_data["api_best_efficiency_band"] = f"{best_band} km/h ({round(best_eff, 2)} km/1%)"
+                                    
+                        # Reset vòng mới
+                        self._eff_soc = current_soc
+                        self._eff_odo = odo
+                        self._eff_speeds = []
+                # -----------------------------------------------------------------
+
                 if odo > 0 and self.gas_km_per_liter > 0:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
                 self._is_moving = (speed > 0) or (gear not in ["1", 1]) 
-                
                 if self._is_moving: self._last_data["api_vehicle_status"] = "Đang di chuyển"
                 elif self._is_charging: self._last_data["api_vehicle_status"] = "Đang sạc"
                 else: self._last_data["api_vehicle_status"] = "Đang đỗ"
 
-                # --- LOGIC TRIP THÔNG MINH (30 PHÚT) ---
+                # --- CHUYẾN ĐI (TRIP 30 PHÚT) ---
                 if self._is_moving:
                     self._last_move_time = current_time
 
-                # 1. Đóng Trip nếu đỗ quá 30 phút (1800 giây)
                 if not self._is_moving and (current_time - getattr(self, '_last_move_time', current_time) > 1800):
                     if getattr(self, '_is_trip_active', False):
-                        _LOGGER.info("VinFast: Xe đã dừng 30 phút. Khép lại chuyến đi.")
                         self._is_trip_active = False
 
-                # 2. Bắt đầu Trip mới khi xe di chuyển trở lại
                 if self._is_moving and not getattr(self, '_is_trip_active', False) and odo > 0:
-                    _LOGGER.info(f"VinFast: Bắt đầu Trip mới từ mốc ODO {odo} km.")
                     self._trip_start_odo = odo
                     self._trip_start_time = current_time
                     self._trip_start_soc = current_soc
@@ -547,7 +591,6 @@ class VinFastAPI:
                     self._last_data["api_trip_energy_used"] = 0.0
                     self._last_data["api_trip_efficiency"] = 0.0
 
-                # 3. Tính toán liên tục khi đang trong Trip
                 if getattr(self, '_is_trip_active', False) and self._trip_start_odo is not None and odo >= self._trip_start_odo:
                     trip_dist = odo - self._trip_start_odo
                     self._last_data["api_trip_distance"] = round(trip_dist, 1)
@@ -567,20 +610,15 @@ class VinFastAPI:
                             self._last_data["api_trip_energy_used"] = round(energy_used, 2)
                             self._last_data["api_trip_efficiency"] = round((energy_used / trip_dist) * 100, 2)
 
-                # --- ĐỊNH VỊ GPS CHỐNG GIẬT LAG ---
-                # Vì các gói tin MQTT rời rạc nên ta phải lấy dữ liệu cũ ra bù đắp nếu gói mới bị thiếu
                 lat = data_dict.get("00006_00001_00000", self._last_data.get("00006_00001_00000"))
                 lon = data_dict.get("00006_00001_00001", self._last_data.get("00006_00001_00001"))
-                
                 if lat and lon:
                     curr_coord = f"{lat},{lon}"
                     if curr_coord != self._last_lat_lon: 
                         self._last_lat_lon = curr_coord
-                        self._last_data["api_current_address"] = f"Đang định vị OSM ({curr_coord})..."
-                        # Đẩy hàm kéo bản đồ sang luồng chạy ngầm để không làm nghẽn MQTT
+                        self._last_data["api_current_address"] = f"Đang định vị GPS ({curr_coord})..."
                         threading.Thread(target=self._update_location_async, args=(lat, lon), daemon=True).start()
 
                 if self.callbacks:
                     for cb in self.callbacks: cb(self._last_data)
-        except Exception as e: 
-            pass
+        except Exception: pass
