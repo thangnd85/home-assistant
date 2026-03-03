@@ -2,6 +2,7 @@ import logging
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.util import slugify
 
 from .const import DOMAIN, BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS
 
@@ -43,6 +44,7 @@ class VinFastSensor(SensorEntity):
     def __init__(self, api, device_key, name, unit, icon, dev_class):
         self.api = api
         self._device_key = device_key
+        
         self._attr_has_entity_name = True 
         self._attr_name = name 
         self._attr_unique_id = f"vinfast_{api.vin}_{device_key}"
@@ -50,11 +52,21 @@ class VinFastSensor(SensorEntity):
         self._attr_icon = icon
         self._attr_device_class = dev_class
         
+        # =================================================================
+        # CHUẨN HÓA PREFIX: model_vin
+        # Ví dụ: vf8_xxx123
+        # =================================================================
+        model_slug = slugify(getattr(api, "vehicle_model_display", "VF")).replace("_", "")
+        vin_slug = api.vin.lower() if api.vin else "unknown"
+        # Kết quả: sensor.vf8_xxx123_phan_tram_pin
+        self.entity_id = f"sensor.{model_slug}_{vin_slug}_{slugify(name)}"
+
         self._attr_native_value = api._last_data.get(device_key)
 
+        veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, api.vin)},
-            name=f"{getattr(api, 'vehicle_name', 'Xe VinFast')} ({getattr(api, 'vehicle_model_display', 'EV')})",
+            name=f"{getattr(api, 'vehicle_model_display', 'VinFast')} {veh_name}".strip(),
             manufacturer="VinFast",
             model=getattr(api, "vehicle_model_display", "EV"),
         )
@@ -69,7 +81,6 @@ class VinFastSensor(SensorEntity):
             attrs = {}
             stats = getattr(self.api, '_eff_stats', {})
             try:
-                # Sắp xếp các dải tốc độ từ thấp lên cao (10-20, 20-30...)
                 sorted_stats = dict(sorted(stats.items(), key=lambda item: int(item[0].split('-')[0])))
             except:
                 sorted_stats = stats
