@@ -1,82 +1,91 @@
-🚗 VinFast Smart Integration for Home Assistant
-Tích hợp siêu việt đưa chiếc ô tô điện VinFast của bạn vào Home Assistant. Không chỉ đơn thuần là hiển thị thông số, Component này được trang bị các thuật toán Khoa học Dữ liệu (Data Science) đỉnh cao để biến Home Assistant thành một "Trung tâm phân tích viễn trắc" (Telemetry Hub) mang phong cách của Tesla hay Rivian.
+🚗 VinFast Smart Integration cho Home Assistant
 
-✨ Tính năng Nổi bật (Core Features)
-🚀 Dữ liệu Thời gian thực (Real-time MQTT): Sử dụng kết nối WebSockets trực tiếp tới AWS IoT Core của VinFast với cơ chế tự động vượt rào (Bypass) để duy trì luồng dữ liệu 24/7 mà không cần mở App trên điện thoại.
+Tích hợp (Integration) siêu việt đưa chiếc ô tô điện VinFast của bạn vào hệ sinh thái Home Assistant. Không chỉ đơn thuần là kéo thông số, Component này được trang bị các thuật toán Khoa học Dữ liệu (Data Science) đỉnh cao để biến Home Assistant thành một "Trung tâm phân tích viễn trắc" (Telemetry Hub) mạnh mẽ, hoạt động 24/7 mà không cần mở App điện thoại.
 
-🧠 Phân tích Động học Lượng tử (Smart Profiling): Thuật toán đếm tần suất mẫu tốc độ (Frequency Sampling) siêu việt. Tự động loại bỏ nhiễu do dừng đèn đỏ và phân tích chính xác "Dải tốc độ nào đang đem lại hiệu suất tốt nhất cho xe" mỗi khi pin sụt 1%.
+✨ Các tính năng cốt lõi (Core Features)
 
-🔋 Quản lý Pin & Sạc Thông minh: Tự động bắt sự kiện Cắm/Rút súng sạc trong tích tắc. Tự động tạo luồng chạy ngầm để lấy hóa đơn sạc (Số kWh, Hiệu suất) sau 60 giây kể từ khi rút súng.
+🚀 Dữ liệu Thời gian thực (Real-time MQTT): Sử dụng kết nối WebSockets trực tiếp tới AWS IoT Core của VinFast với cơ chế tự động vượt rào (Bypass) để duy trì luồng dữ liệu 24/7. Tự động trả lời ping từ T-Box của xe.
 
-⏱️ Quản lý Chuyến đi (Trip 30 Mins): Thông minh nhận diện chuyến đi mới. Tự động chốt sổ chuyến đi (Quãng đường, Chi phí, Vận tốc trung bình) nếu xe đỗ quá 30 phút.
+🧠 Phân tích Động học Lượng tử (Smart Profiling): Thuật toán đếm tần suất mẫu tốc độ (Frequency Sampling) thông minh. Tự động loại bỏ nhiễu do dừng đèn đỏ và phân tích chính xác "Dải tốc độ tối ưu nhất" mỗi khi pin sụt 1%.
 
-🗺️ GPS Tĩnh tâm (Anti-flicker Map): Định vị xe với OpenStreetMap. Tự động làm tròn sai số vệ tinh (11 mét) để bản đồ không bao giờ bị nhấp nháy khi xe đang đỗ.
+🔋 Quản lý Sạc Tức thời (Smart Charging): Bắt sự kiện Cắm/Rút súng sạc trong vài giây thông qua MQTT. Tự động tạo luồng ngầm để lấy hóa đơn sạc (Số kWh, Hiệu suất) từ máy chủ sau khi chốt phiên sạc.
 
-🎮 Điều khiển Từ xa Động (Dynamic Remote): Mở khóa, Bật điều hòa, Tìm xe... Cơ chế thông minh tự động ẩn các nút điều khiển nếu phát hiện xe của bạn là dòng VF 3 (không hỗ trợ phần cứng).
+⏱️ Quản lý Chuyến đi (Trip 30 Mins): Tự động nhận diện chuyến đi mới khi bánh xe lăn. Chốt sổ chuyến đi (Quãng đường, Chi phí điện/xăng quy đổi, Vận tốc trung bình) nếu xe đỗ tĩnh quá 30 phút.
 
-🎨 Giao diện Digital Twin: Giao diện thẻ Card cực kỳ sang trọng, responsive (1 cột trên Mobile, 3 cột trên Desktop).
+🗺️ GPS Tĩnh tâm (Anti-flicker Tracking): Thuật toán làm tròn sai số vệ tinh (11 mét) để tọa độ device_tracker không bị nhảy loạn xạ khi xe đang đỗ tĩnh trong gara, giúp tiết kiệm tài nguyên cho Home Assistant.
 
-⚙️ Yêu cầu Hệ thống (Prerequisites)
-Để giao diện hoạt động đẹp nhất, bạn cần cài đặt các thành phần sau từ HACS (Home Assistant Community Store) -> tab Frontend:
+🎮 Điều khiển Từ xa Động (Dynamic Remote): Tích hợp các nút bấm Mở khóa, Bật điều hòa, Tìm xe... Cấu trúc Entity ID được chuẩn hóa dạng [model]_[vin] giúp quản lý nhiều xe cùng lúc không bị xung đột.
 
-Mushroom Cards (Hỗ trợ UI bo góc đẹp mắt).
+📥 Hướng dẫn Cài đặt qua HACS (Khuyên dùng)
 
-Layout-Card (Hỗ trợ chia cột Responsive).
+Cách dễ nhất để cài đặt và nhận các bản cập nhật tự động là sử dụng HACS (Home Assistant Community Store).
 
-📥 Hướng dẫn Cài đặt (Installation)
-Bước 1: Cài đặt Backend (Code Python)
-Copy toàn bộ thư mục vinfast vào trong thư mục custom_components của Home Assistant.
+Mở Home Assistant, truy cập vào menu HACS ở cột bên trái.
 
-Khởi động lại Home Assistant.
+Chọn mục Integrations (Tích hợp).
 
-Vào Cài đặt (Settings) -> Thiết bị & Dịch vụ (Devices & Services) -> Bấm Thêm tích hợp (Add Integration).
+Bấm vào biểu tượng 3 chấm ở góc trên cùng bên phải, chọn Custom repositories (Kho lưu trữ tùy chỉnh).
 
-Tìm kiếm VinFast và đăng nhập bằng Tài khoản & Mật khẩu App VinFast của bạn.
+Điền các thông tin sau:
 
-Ngay sau khi đăng nhập, các thực thể (Entity) sẽ được tạo ra tự động theo chuẩn nhận diện: sensor.[model]_[vin]_[tên_cảm_biến] (Ví dụ: sensor.vf8_jhp1234..._phan_tram_pin).
+Repository: [https://github.com/thangnd85/Vinfast-connected-car]
 
-Bước 2: Cài đặt Giao diện Frontend (Custom Card)
-Copy file vinfast-digital-twin.js vào thư mục www/ trong Home Assistant (nếu không có thì tự tạo thư mục www).
+Category: Chọn Integration.
 
-Vào Cài đặt -> Dashboards -> Bấm nút ba chấm góc trên bên phải -> Chọn Tài nguyên (Resources).
+Bấm Add (Thêm).
 
-Bấm Thêm tài nguyên (Add Resource).
+Đóng hộp thoại, lúc này bạn sẽ thấy Tích hợp "VinFast" xuất hiện trên màn hình HACS. Bấm vào nó và chọn Download (Tải về).
 
-Nhập URL: /local/vinfast-digital-twin.js?v=1
+⚠️ Quan trọng: Khởi động lại Home Assistant của bạn.
 
-Chọn loại Resource là: JavaScript Module và Lưu lại.
+⚙️ Cấu hình Tích hợp (Configuration)
+Sau khi cài đặt và khởi động lại, bạn tiến hành đăng nhập vào xe:
 
-💻 Cấu hình Dashboard (Lovelace UI)
-Mở màn hình Dashboard của bạn, chọn Chỉnh sửa giao diện (Edit Dashboard).
+Vào Cài đặt (Settings) -> Thiết bị & Dịch vụ (Devices & Services).
 
-Thêm một Thẻ mới (Add Card), kéo xuống dưới cùng chọn Thủ công (Manual).
+Bấm nút Thêm tích hợp (Add Integration) ở góc dưới bên phải.
 
-Copy và dán đoạn mã YAML dưới đây vào:
+Gõ VinFast vào ô tìm kiếm và chọn nó.
 
-YAML
-type: custom:vinfast-digital-twin
-entity_prefix: vf8_jhp123456789  # THAY BẰNG PREFIX CỦA BẠN
-(Mẹo: Bạn có thể vào phần Thực thể của HA, tìm một cảm biến của xe, lấy ID của nó bỏ đi phần sensor. và bỏ phần chức năng ở cuối, phần còn lại chính là entity_prefix của bạn).
+Nhập Email và Mật khẩu tài khoản App VinFast của bạn.
+
+Home Assistant sẽ tự động quét, lấy mã VIN và sinh ra toàn bộ Cảm biến (Sensor) & Nút bấm (Button) với cấu trúc chuẩn:
+
+sensor.[model]_[vin]_[tên_cảm_biến] (VD: sensor.vf8_abcd1234_phan_tram_pin).
 
 🛠️ Cấu hình Tùy chọn nâng cao (Options)
-Bạn có thể thay đổi các thông số chi phí ngay trong UI Tích hợp:
+Tích hợp này cho phép bạn tính toán chi phí sạc và so sánh với xe xăng theo thời gian thực.
+Tại màn hình Quản lý Tích hợp VinFast, bấm vào nút Cấu hình (Configure) để thay đổi:
 
 Giá điện: Mặc định 4000 VNĐ/kWh.
 
 Giá xăng quy đổi: Mặc định 20.000 VNĐ/Lít.
 
-Tiêu thụ Điện / Xăng tham chiếu: Để hệ thống tính toán quy đổi ra số tiền bạn đã tiết kiệm được khi đi xe điện so với xe xăng!
+Mức tiêu thụ Điện tham chiếu (kWh/km).
+
+Mức tiêu thụ Xăng tham chiếu (km/Lít).
+
+🎨 Giao diện điều khiển (Frontend / Dashboard)
+Kho lưu trữ này chỉ chứa mã nguồn Backend (Core Component) sinh ra các thực thể.
+Để có giao diện Digital Twin mô phỏng xe 3D và các bảng thống kê xịn xò, vui lòng truy cập và cài đặt Custom Card tại kho lưu trữ Frontend của chúng tôi:
+
+👉 [Link dẫn tới GitHub Custom Card của bạn]
 
 🛡️ Tuyên bố Miễn trừ trách nhiệm (Disclaimer)
-Dự án này được phát triển bởi cộng đồng, KHÔNG phải là sản phẩm chính thức của VinFast.
 
-Mọi hành động điều khiển xe (Mở khóa, bật điều hòa...) thông qua API đều do người dùng tự chịu trách nhiệm.
+Dự án này được phát triển bởi cộng đồng Open Source và KHÔNG phải là sản phẩm, cũng như không được chứng nhận hay liên kết chính thức với VinFast Auto.
 
-Vui lòng bảo mật tài khoản và mật khẩu của bạn.
+Mọi hành động tương tác, lấy dữ liệu và ra lệnh điều khiển từ xa (Mở khóa, Bật AC...) đều gọi qua API nội bộ của Ứng dụng di động VinFast. Người dùng hoàn toàn tự chịu trách nhiệm về mọi rủi ro (nếu có) đối với phương tiện của mình khi sử dụng tích hợp này.
 
-🌟 Nếu bạn thấy dự án này tuyệt vời, đừng quên chia sẻ với cộng đồng những người đam mê xe điện! 🌟
-VI
-Phần này đã quá cũ. Đợt này em chỉ làm cái component vinfast thôi 
+Mã nguồn cam kết không lưu trữ bất kỳ thông tin cá nhân hay mật khẩu nào ngoài phạm vi của bộ nhớ Home Assistant cục bộ của bạn.
+
+
+Để có giao diện đẹp, đọc thêm:
+
+[https://github.com/thangnd85/vinfast-digital-twin-card]
+
+<img width="1224" height="2700" alt="image" src="https://github.com/user-attachments/assets/3113b688-736e-42e8-b01a-faccaaf76885" />
+
 <img width="598" height="808" alt="Image" src="https://github.com/user-attachments/assets/53954013-7439-473e-abe2-155474922ab6" />
 
 <img width="545" height="937" alt="Image" src="https://github.com/user-attachments/assets/69b0f2e5-81d3-4a7e-8ef7-2f1a9b7b2688" />
