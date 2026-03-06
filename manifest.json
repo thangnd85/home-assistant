@@ -1,7 +1,7 @@
 {
   "domain": "vinfast",
   "name": "VinFast Connected Car",
-  "codeowners": ["@yourname"],
+  "codeowners": ["@thangnd85"],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/VF9-Club/VFDashboard",
