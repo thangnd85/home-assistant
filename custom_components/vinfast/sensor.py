@@ -5,7 +5,17 @@ from homeassistant.core import callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import slugify
 
-from .const import DOMAIN, BASE_SENSORS, VF3_SENSORS, VF567_SENSORS, VF89_SENSORS
+from .const import DOMAIN, BASE_SENSORS, VF3_SENSORS
+
+try:
+    from .const import VF567_SENSORS
+except ImportError:
+    VF567_SENSORS = {}
+
+try:
+    from .const import VF89_SENSORS
+except ImportError:
+    VF89_SENSORS = {}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,7 +55,6 @@ class VinFastSensor(SensorEntity):
     def __init__(self, api, device_key, name, unit, icon, dev_class):
         self.api = api
         self._device_key = device_key
-        
         self._attr_has_entity_name = True 
         self._attr_name = name 
         self._attr_native_unit_of_measurement = unit
@@ -57,8 +66,8 @@ class VinFastSensor(SensorEntity):
         
         self._attr_unique_id = f"{model_slug}_{vin_slug}_{device_key}"
         self.entity_id = f"sensor.{model_slug}_{vin_slug}_{slugify(name)}"
-
         self._attr_native_value = None
+        self._attr_extra_state_attributes = {} # Biến lưu Attributes chủ động
 
         veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
@@ -74,29 +83,8 @@ class VinFastSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        # GIẤU CÁC DỮ LIỆU SIÊU LỚN VÀO ATTRIBUTES ĐỂ KHÔNG BỊ HOME ASSISTANT XÓA BỎ
-        if self._device_key == "api_trip_route":
-            return {"route_points": self.api._last_data.get("api_trip_route", "[]")}
-        if self._device_key == "api_nearby_stations":
-            try: return {"stations": json.loads(self.api._last_data.get("api_nearby_stations", "[]"))}
-            except: return {"stations": []}
-        if self._device_key == "api_debug_raw":
-            try: return json.loads(self.api._last_data.get("api_debug_raw", "{}"))
-            except: return {"status": "Không có dữ liệu"}
-            
-        if self._device_key == "api_best_efficiency_band":
-            attrs = {}
-            stats = getattr(self.api, '_eff_stats', {})
-            try:
-                sorted_stats = dict(sorted(stats.items(), key=lambda item: int(item[0].split('-')[0])))
-            except:
-                sorted_stats = stats
-            for k, v in sorted_stats.items():
-                if v["drops"] > 0:
-                    eff = v['dist'] / v['drops']
-                    attrs[f"Dải {k} km/h"] = f"{round(eff, 2)} km/1% (Đã phân tích {round(v['dist'], 1)}km)"
-            return attrs if attrs else {"Trạng thái": "Hệ thống đang đợi % pin sụt giảm..."}
-        return None
+        # Trả về luôn biến chứa Attributes đã được tạo ở process_new_data
+        return self._attr_extra_state_attributes
 
     @callback
     def process_new_data(self, data):
@@ -104,7 +92,51 @@ class VinFastSensor(SensorEntity):
             val = data[self._device_key]
             if val is None: return
 
-            # XỬ LÝ TRÁNH TRÀN 255 KÝ TỰ CHO CÁC MÃ ĐẶC BIỆT
+            # =======================================================
+            # BƯỚC 1: XỬ LÝ VÀ "ÉP" HOME ASSISTANT HIỆN ATTRIBUTES
+            # =======================================================
+            if self._device_key == "api_trip_route":
+                self._attr_extra_state_attributes = {"route_points": self.api._last_data.get("api_trip_route", "[]")}
+                
+            elif self._device_key == "api_nearby_stations":
+                try: self._attr_extra_state_attributes = {"stations": json.loads(self.api._last_data.get("api_nearby_stations", "[]"))}
+                except: self._attr_extra_state_attributes = {"stations": []}
+                
+            # ĐÂY LÀ CHỖ TẠO MẢNG CHO DEBUG RAW DATA
+            elif self._device_key == "api_debug_raw":
+                try:
+                    log_str = self.api._last_data.get("api_debug_changelog_json", "[]")
+                    raw_list = json.loads(log_str)
+                    
+                    # Biến mảng JSON (dict) thành mảng Chuỗi (List of Strings)
+                    formatted_list = []
+                    for item in raw_list:
+                        time_str = item.get("time", "").split(" ")[1] if " " in item.get("time", "") else item.get("time", "")
+                        code = item.get("code", "")
+                        old_v = item.get("old_value", "")
+                        new_v = item.get("new_value", "")
+                        
+                        # Format đúng như ý bạn: "Time | Code : Old -> New"
+                        formatted_list.append(f"{time_str} | {code} : {old_v} ➔ {new_v}")
+                        
+                    self._attr_extra_state_attributes = {
+                        "Lịch sử mã thay đổi": formatted_list if formatted_list else ["Đang chờ nhận tín hiệu..."]
+                    }
+                except Exception as e:
+                    self._attr_extra_state_attributes = {"Lỗi": str(e)}
+
+            elif self._device_key == "api_best_efficiency_band":
+                attrs = {}
+                stats = getattr(self.api, '_eff_stats', {})
+                for k, v in stats.items():
+                    if v["drops"] > 0:
+                        attrs[f"Dải {k} km/h"] = f"{round(v['dist'] / v['drops'], 2)} km/1%"
+                self._attr_extra_state_attributes = attrs if attrs else {"Trạng thái": "Hệ thống đang đợi % pin sụt giảm..."}
+            # =======================================================
+
+            # =======================================================
+            # BƯỚC 2: XỬ LÝ TRẠNG THÁI HIỂN THỊ CHÍNH (STATE)
+            # =======================================================
             if self._device_key == "api_trip_route":
                 try: 
                     pts = json.loads(val)
@@ -124,11 +156,10 @@ class VinFastSensor(SensorEntity):
                 return
 
             if self._device_key == "api_debug_raw":
-                self._attr_native_value = "Đang ghi Log..."
+                self._attr_native_value = str(val)[:255] if val else "Đang khởi động..."
                 self.async_write_ha_state()
                 return
 
-            # Xử lý các mã thông thường
             if self._device_key in ["api_total_charge_cost", "api_total_charge_cost_est", "api_trip_charge_cost", "api_total_gas_cost", "api_trip_gas_cost"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0

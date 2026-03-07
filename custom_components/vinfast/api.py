@@ -11,18 +11,15 @@ import logging
 import uuid
 import random
 import os
+import math
 import paho.mqtt.client as mqtt
 
-# Kéo các biến CƠ BẢN chắc chắn có trong file const.py của bạn
 from .const import (
     AUTH0_DOMAIN, AUTH0_CLIENT_ID, API_BASE, 
     AWS_REGION, COGNITO_POOL_ID, IOT_ENDPOINT, DEVICE_ID, 
     BASE_SENSORS, VF3_SENSORS
 )
 
-# =====================================================================
-# BỌC LỖI IMPORT: Tự động xử lý nếu thiếu các biến nâng cao
-# =====================================================================
 try:
     from .const import VF567_SENSORS
 except ImportError:
@@ -44,17 +41,12 @@ except ImportError:
         "VF8": {"capacity": 87.7, "range": 471, "ev_kwh_per_km": 0.186, "gas_km_per_liter": 12.0},
         "VF9": {"capacity": 123.0, "range": 594, "ev_kwh_per_km": 0.207, "gas_km_per_liter": 10.0}
     }
-# =====================================================================
 
 _LOGGER = logging.getLogger(__name__)
 
-# =====================================================================
-# TRỎ TẤT CẢ FILE JSON VỀ DUY NHẤT THƯ MỤC WWW (Dò tự động đường dẫn gốc)
-# =====================================================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 HA_CONFIG_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 WWW_DIR = os.path.join(HA_CONFIG_DIR, "www")
-# =====================================================================
 
 def safe_float(val, default=0.0):
     try:
@@ -85,7 +77,8 @@ class VinFastAPI:
             "api_current_address": "Đang kết nối...",
             "api_trip_route": "[]",
             "api_nearby_stations": "[]",
-            "api_debug_raw": "{}",
+            "api_debug_raw": "Đang kết nối...", 
+            "api_debug_raw_json": "{}", 
             "api_trip_distance": 0.0,
             "api_trip_avg_speed": 0.0,
             "api_trip_energy_used": 0.0,
@@ -115,11 +108,16 @@ class VinFastAPI:
         self._trip_start_soc = None
         self._trip_start_address = "Không xác định"
         self._route_coords = []
+        self._last_gps_time = None 
         
         self._eff_soc = None
         self._eff_odo = None
         self._eff_speeds = []
         self._eff_stats = {}
+        
+        # KHAI BÁO BIẾN LOCK VÀ MẢNG LOG ĐỂ CHỐNG XUNG ĐỘT FILE
+        self._raw_changelog_data = [] 
+        self._log_lock = threading.Lock()
 
     def add_callback(self, cb):
         if cb not in self.callbacks:
@@ -161,14 +159,14 @@ class VinFastAPI:
     def _load_state(self):
         if not self.vin: return
         state_file = os.path.join(WWW_DIR, f"vinfast_state_{self.vin.lower()}.json")
+        changelog_file = os.path.join(WWW_DIR, f"vinfast_changelog_{self.vin.lower()}.json")
+        
         if os.path.exists(state_file):
             try:
                 with open(state_file, 'r', encoding='utf-8') as f:
                     saved_data = json.load(f)
-                    
                     if "last_data" in saved_data:
                         self._last_data.update(saved_data["last_data"])
-                    
                     if "internal_memory" in saved_data:
                         mem = saved_data["internal_memory"]
                         self._is_trip_active = mem.get("is_trip_active", False)
@@ -177,26 +175,26 @@ class VinFastAPI:
                         self._trip_start_soc = mem.get("trip_start_soc", None)
                         self._trip_start_address = mem.get("trip_start_address", "Không xác định")
                         self._route_coords = mem.get("route_coords", [])
-                        
+                        self._last_gps_time = mem.get("last_gps_time", None)
                         self._eff_soc = mem.get("eff_soc", None)
                         self._eff_odo = mem.get("eff_odo", None)
                         self._eff_speeds = mem.get("eff_speeds", [])
                         self._eff_stats = mem.get("eff_stats", {})
-                        
                         self._is_charging = mem.get("is_charging", False)
                         self._last_is_charging = mem.get("last_is_charging", False)
                         self._is_moving = mem.get("is_moving", False)
-
-                    timestamp = saved_data.get('timestamp', 'Không rõ')
-                    _LOGGER.warning(f"VinFast: Đã khôi phục vĩnh viễn trạng thái từ JSON (Dữ liệu lúc: {timestamp})")
-            except Exception as e:
-                _LOGGER.error(f"VinFast: Lỗi đọc file phục hồi trạng thái: {e}")
+            except Exception: pass
+            
+        if os.path.exists(changelog_file):
+            try:
+                with open(changelog_file, 'r', encoding='utf-8') as f:
+                    self._raw_changelog_data = json.load(f)
+            except: pass
 
     def _save_state(self):
         if not self.vin: return
         if not os.path.exists(WWW_DIR):
             os.makedirs(WWW_DIR, exist_ok=True)
-            
         state_file = os.path.join(WWW_DIR, f"vinfast_state_{self.vin.lower()}.json")
         try:
             data_to_save = {
@@ -208,21 +206,40 @@ class VinFastAPI:
                     "trip_start_soc": getattr(self, '_trip_start_soc', None),
                     "trip_start_address": getattr(self, '_trip_start_address', "Không xác định"),
                     "route_coords": getattr(self, '_route_coords', []),
+                    "last_gps_time": getattr(self, '_last_gps_time', None), 
                     "eff_soc": getattr(self, '_eff_soc', None),
                     "eff_odo": getattr(self, '_eff_odo', None),
                     "eff_speeds": getattr(self, '_eff_speeds', []),
                     "eff_stats": getattr(self, '_eff_stats', {}),
                     "is_charging": getattr(self, '_is_charging', False),
                     "last_is_charging": getattr(self, '_last_is_charging', False),
-                    "is_moving": getattr(self, '_is_moving', False),
+                    "is_moving": getattr(self, '_is_moving', False)
                 },
                 "timestamp": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "unix_time": time.time()
             }
             with open(state_file, 'w', encoding='utf-8') as f:
                 json.dump(data_to_save, f, ensure_ascii=False)
+        except Exception: pass
+
+    # ==============================================================
+    # HÀM LƯU JSON ĐƯỢC BẢO VỆ BỞI LOCK CHỐNG CORRUPT FILE
+    # ==============================================================
+    def _save_changelog_to_json(self):
+        if not self.vin: return
+        if not os.path.exists(WWW_DIR):
+            os.makedirs(WWW_DIR, exist_ok=True)
+        changelog_file = os.path.join(WWW_DIR, f"vinfast_changelog_{self.vin.lower()}.json")
+        try:
+            # Bước 1: Mở khóa RAM, copy dữ liệu ra thật nhanh
+            with self._log_lock:
+                data_to_write = list(self._raw_changelog_data)
+            
+            # Bước 2: Thả khóa RAM ra cho luồng khác chạy, từ từ ghi file vào ổ cứng
+            with open(changelog_file, 'w', encoding='utf-8') as f:
+                json.dump(data_to_write, f, ensure_ascii=False, indent=2)
         except Exception as e: 
-            _LOGGER.error(f"VinFast: Lỗi khi ghi file state: {e}")
+            _LOGGER.error(f"VinFast: Lỗi ghi file Changelog JSON: {e}")
 
     def get_vehicles(self):
         url = f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle"
@@ -265,26 +282,21 @@ class VinFastAPI:
                 if k.replace(" ", "") in model.replace(" ", ""):
                     target_spec = v
                     break
-                    
             cap = target_spec["capacity"]
             ran = target_spec["range"]
             if cap > 0:
                 self._last_data["api_static_capacity"] = cap
                 self._last_data["api_static_range"] = ran
-                
                 soh = safe_float(self._last_data.get("34220_00001_00001", 100))
                 if 0 < soh <= 100:
                     self._last_data["api_battery_degradation"] = round(cap * (100 - soh) / 100, 2)
-                    
                 total_kwh = self._last_data.get("api_total_energy_charged", 0)
                 odo = safe_float(self._last_data.get("34183_00001_00003", 0))
                 if odo == 0: odo = safe_float(self._last_data.get("34199_00000_00000", 0))
-                
                 eff = 0
                 if total_kwh > 0 and odo > 0:
                     eff = (total_kwh / odo) * 100
                     self._last_data["api_lifetime_efficiency"] = round(eff, 2)
-
                 soc = safe_float(self._last_data.get("34183_00001_00009", self._last_data.get("34180_00001_00011", 0)))
                 if eff > 0:
                     calc_max_range = cap / (eff / 100)
@@ -371,19 +383,13 @@ class VinFastAPI:
         try:
             self._post_api("ccarusermgnt/api/v1/user-vehicle/set-primary-vehicle", {"vinCode": self.vin})
             self._post_api("ccaraccessmgmt/api/v1/remote/app/wakeup", {})
-
             active_dict = BASE_SENSORS.copy()
             model = self.vehicle_model_display.upper()
             if "VF 3" in model or "VF3" in model: active_dict.update(VF3_SENSORS)
             elif any(m in model for m in ["VF 5", "VF 6", "VF 7", "VF5", "VF6", "VF7"]): active_dict.update(VF3_SENSORS), active_dict.update(VF567_SENSORS)
             elif any(m in model for m in ["VF 8", "VF 9", "VF8", "VF9"]): active_dict.update(VF89_SENSORS)
             else: active_dict.update(VF3_SENSORS)
-
-            request_objects = [
-                {"objectId": str(int(k.split("_")[0])), "instanceId": str(int(k.split("_")[1])), "resourceId": str(int(k.split("_")[2]))} 
-                for k in active_dict.keys() if "_" in k and not k.startswith("api_")
-            ]
-            
+            request_objects = [{"objectId": str(int(k.split("_")[0])), "instanceId": str(int(k.split("_")[1])), "resourceId": str(int(k.split("_")[2]))} for k in active_dict.keys() if "_" in k and not k.startswith("api_")]
             self._post_api("ccaraccessmgmt/api/v1/telemetry/app/ping", request_objects)
             res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", request_objects)
             if res and res.status_code == 404:
@@ -398,11 +404,7 @@ class VinFastAPI:
             while self._running:
                 ts = int(time.time() * 1000)
                 headers = self._get_base_headers()
-                headers.update({
-                    "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), 
-                    "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), 
-                    "X-TIMESTAMP": str(ts)
-                })
+                headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
                 payload = {"orderStatus": [3, 5, 7], "startTime": 1609459200000, "endTime": int(time.time() * 1000)}
                 res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json=payload, timeout=15)
                 if res.status_code == 401:
@@ -431,15 +433,12 @@ class VinFastAPI:
             if valid_sessions:
                 sorted_sessions = sorted(valid_sessions, key=lambda x: safe_float(x.get("pluggedTime", 0)), reverse=True)
                 last_session = sorted_sessions[0]
-                
                 start_soc_api = safe_float(last_session.get("startBatteryLevel", 0))
                 end_soc_api = safe_float(last_session.get("endBatteryLevel", 0))
                 if start_soc_api > 0: self._last_data["api_last_charge_start_soc"] = start_soc_api
                 if end_soc_api > 0: self._last_data["api_last_charge_end_soc"] = end_soc_api
-
                 energy_grid = safe_float(last_session.get("totalKWCharged", 0))
                 self._last_data["api_last_charge_energy"] = round(energy_grid, 2)
-                
                 p_time = safe_float(last_session.get("pluggedTime", 0))
                 u_time = safe_float(last_session.get("unpluggedTime", 0))
                 duration_min = 0
@@ -448,7 +447,6 @@ class VinFastAPI:
                     self._last_data["api_last_charge_duration"] = round(duration_min, 0)
                 if duration_min > 0:
                     self._last_data["api_last_charge_power"] = round((energy_grid / (duration_min / 60)), 1)
-                
                 cap = safe_float(self._last_data.get("api_static_capacity", 0))
                 if cap > 0 and energy_grid > 0:
                     cur_start = safe_float(self._last_data.get("api_last_charge_start_soc", 0))
@@ -457,7 +455,6 @@ class VinFastAPI:
                     if energy_added_to_battery > 0:
                         charge_eff = (energy_added_to_battery / energy_grid) * 100
                         self._last_data["api_last_charge_efficiency"] = min(round(charge_eff, 1), 100.0)
-
             self._calculate_advanced_stats()
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
@@ -471,17 +468,12 @@ class VinFastAPI:
             method, api_path = "POST", "ccarcharging/api/v1/stations/search"
             ts = int(time.time() * 1000)
             headers = self._get_base_headers()
-            headers.update({
-                "X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), 
-                "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), 
-                "X-TIMESTAMP": str(ts)
-            })
+            headers.update({"X-HASH": self._generate_x_hash(method, api_path, self.vin, ts), "X-HASH-2": self._generate_x_hash_2("android", self.vin, DEVICE_ID, api_path, method, ts), "X-TIMESTAMP": str(ts)})
             payload = {"latitude": current_lat, "longitude": current_lon, "excludeFavorite": False}
             res = requests.post(f"{API_BASE}/{api_path}?page=0&size=20", headers=headers, json=payload, timeout=15)
             if res and res.status_code == 200:
                 data = res.json().get("data", [])
                 stations = []
-                import math 
                 for st in data:
                     st_lat = st.get("latitude")
                     st_lng = st.get("longitude")
@@ -513,14 +505,8 @@ class VinFastAPI:
     def _send_heartbeat(self, state="1"):
         if not self.client or not self.client.is_connected() or not self.vin: return
         topic = f"/vehicles/{self.vin}/push/connected/heartbeat"
-        payload = {
-            "version": "1.2", 
-            "timestamp": int(time.time() * 1000), 
-            "trans_id": str(uuid.uuid4()), 
-            "content": {"34183": { "1": { "54": str(state) } }}
-        }
-        try: 
-            self.client.publish(topic, json.dumps(payload), qos=1)
+        payload = {"version": "1.2", "timestamp": int(time.time() * 1000), "trans_id": str(uuid.uuid4()), "content": {"34183": { "1": { "54": str(state) } }}}
+        try: self.client.publish(topic, json.dumps(payload), qos=1)
         except Exception: pass
 
     def _get_aws_mqtt_url(self):
@@ -528,10 +514,8 @@ class VinFastAPI:
         identity_id = res_id.json()["IdentityId"]
         creds_res = requests.post(f"https://cognito-identity.{AWS_REGION}.amazonaws.com/", headers={"Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}, json={"IdentityId": identity_id, "Logins": {AUTH0_DOMAIN: self.access_token}}, timeout=15)
         creds = creds_res.json()["Credentials"]
-        try:
-            requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id}, timeout=15)
+        try: requests.post(f"{API_BASE}/ccarusermgnt/api/v1/user-vehicle/attach-policy", headers={"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json", "x-service-name": "CAPP"}, json={"target": identity_id}, timeout=15)
         except Exception: pass
-
         def sign(k, m): return hmac.new(k, m.encode('utf-8'), hashlib.sha256).digest()
         amz_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         date_stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
@@ -566,7 +550,6 @@ class VinFastAPI:
                 with open(history_file, 'r', encoding='utf-8') as f:
                     try: trips = json.load(f)
                     except: pass
-            
             start_dt = datetime.datetime.fromtimestamp(self._trip_start_time) if self._trip_start_time else datetime.datetime.now()
             duration_mins = int((time.time() - self._trip_start_time) / 60) if self._trip_start_time else 0
             end_address = self._last_data.get("api_current_address", "Không xác định")
@@ -588,9 +571,7 @@ class VinFastAPI:
             if len(trips) > 30: trips = trips[:30]
             with open(history_file, 'w', encoding='utf-8') as f:
                 json.dump(trips, f, ensure_ascii=False)
-            _LOGGER.warning(f"VinFast: ĐÃ LƯU THÀNH CÔNG FILE JSON TẠI: {history_file}")
-        except Exception as e:
-            _LOGGER.error(f"VinFast: Lỗi ghi lịch sử Trip: {e}")
+        except Exception: pass
 
     def _api_polling_loop(self):
         start_time = time.time()
@@ -598,7 +579,6 @@ class VinFastAPI:
         last_charge_fetch = start_time
         last_token_renew = start_time
         last_app_sim = start_time
-        
         last_state_save = start_time
         
         time.sleep(3) 
@@ -619,35 +599,30 @@ class VinFastAPI:
                     if not getattr(self, '_is_moving', False):
                         if now - getattr(self, '_last_move_time', now) > 300:
                             self._is_trip_active = False
-                            _LOGGER.warning("VinFast: [Background] Đang xuất file JSON History ra ổ cứng...")
                             self._save_trip_to_history()
                             self._trip_start_odo = None
                             self._trip_start_time = None
                             self._route_coords = []
+                            self._last_gps_time = None 
                             self._save_state() 
                 
                 if now - last_heartbeat >= 120:
                     last_heartbeat = now
                     self._send_heartbeat("1")
-                
                 if now - last_charge_fetch >= 3600:
                     last_charge_fetch = now
                     self.fetch_charging_history()
-
                 if now - last_token_renew >= 3000:
                     last_token_renew = now
                     self._renew_aws_connection()
-
                 if now - last_app_sim >= 900:
                     last_app_sim = now
                     if not getattr(self, '_is_moving', False) and not getattr(self, '_is_charging', False):
                         self.register_resources()
-
                 if getattr(self, '_force_full_scan', False):
                     self._force_full_scan = False
                     last_app_sim = now
                     self.register_resources()
-                        
             except Exception: pass
 
     def start_mqtt(self):
@@ -693,25 +668,58 @@ class VinFastAPI:
                 val = item.get("value")
                 
                 if key == "34180_00001_00011" and isinstance(val, str) and "profile_email" in val:
-                    try:
-                        prof = json.loads(val)
-                        self._last_data["api_driver_email"] = prof.get("profile_email", "")
-                        self._last_data["api_driver_role"] = prof.get("profile_rule", "")
-                        continue 
-                    except: pass
-
+                    continue 
                 if key and val is not None: data_dict[key] = val
             
             if data_dict:
                 current_time = time.time()
                 
+                # =======================================================
+                # CẬP NHẬT LOG SỬ DỤNG THREADING LOCK (CỰC KỲ AN TOÀN)
+                # =======================================================
                 try:
-                    old_debug = json.loads(self._last_data.get("api_debug_raw", "{}"))
-                    old_debug.update(data_dict) 
-                    self._last_data["api_debug_raw"] = json.dumps(old_debug)
-                    now_str = datetime.datetime.now().strftime('%H:%M:%S')
-                    self._last_data["api_debug_info"] = f"Đã thu thập {len(old_debug)} mã ({now_str})"
-                except: pass
+                    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    time_only = now_str.split(' ')[1]
+                    
+                    old_debug_str = self._last_data.get("api_debug_raw_json", "{}")
+                    old_debug = json.loads(old_debug_str)
+                    
+                    has_changes = False
+                    latest_change_msg = self._last_data.get("api_debug_raw", "Đang theo dõi sự thay đổi...")
+                    
+                    new_logs_to_add = []
+
+                    for k, v in data_dict.items():
+                        if k in old_debug:
+                            old_v = old_debug[k]
+                            if str(old_v) != str(v):
+                                new_logs_to_add.append({ "time": now_str, "code": k, "old_value": str(old_v), "new_value": str(v) })
+                                has_changes = True
+                                latest_change_msg = f"{time_only} : {k} : {old_v} ➔ {v}"
+                        else:
+                            if old_debug: 
+                                new_logs_to_add.append({ "time": now_str, "code": k, "old_value": "NEW", "new_value": str(v) })
+                                has_changes = True
+                                latest_change_msg = f"{time_only} : {k} : Mới ➔ {v}"
+
+                    old_debug.update(data_dict)
+                    self._last_data["api_debug_raw_json"] = json.dumps(old_debug)
+                    self._last_data["api_debug_raw"] = latest_change_msg
+                    
+                    if has_changes:
+                        # Mở Khóa chèn dữ liệu vào mảng
+                        with self._log_lock:
+                            for log_item in new_logs_to_add:
+                                self._raw_changelog_data.insert(0, log_item)
+                            if len(self._raw_changelog_data) > 1000: 
+                                self._raw_changelog_data = self._raw_changelog_data[:1000]
+                                
+                        # Gửi ngay lệnh lưu file chạy độc lập
+                        threading.Thread(target=self._save_changelog_to_json, daemon=True).start()
+
+                except Exception as e:
+                    _LOGGER.error(f"VinFast Debug: Lỗi trong quá trình phân tích Log: {e}")
+                # =======================================================
 
                 if str(data_dict.get("34183_00001_00055", "0")) == "1":
                     self._send_heartbeat("1")
@@ -733,7 +741,6 @@ class VinFastAPI:
                     self._last_data["api_last_charge_start_soc"] = current_soc
                     self._last_is_charging = True
                     self._save_state() 
-                    
                 elif not self._is_charging and getattr(self, '_last_is_charging', False):
                     self._last_data["api_last_charge_end_soc"] = current_soc
                     self._last_is_charging = False
@@ -763,7 +770,6 @@ class VinFastAPI:
                                 if not hasattr(self, '_eff_stats'): self._eff_stats = {}
                                 if band_key not in self._eff_stats: self._eff_stats[band_key] = {"dist": 0.0, "drops": 0.0}
                                 self._eff_stats[band_key]["dist"] += dist; self._eff_stats[band_key]["drops"] += drop_amount
-                                
                                 best_band = "Đang thu thập..."
                                 best_eff = 0
                                 for k, v in self._eff_stats.items():
@@ -779,7 +785,6 @@ class VinFastAPI:
                     self._last_data["api_total_gas_cost"] = round((odo / self.gas_km_per_liter) * self.gas_price, 0)
 
                 self._is_moving = (speed > 0) or (str(gear) in ["2", "4"]) 
-                
                 if self._is_moving: self._last_data["api_vehicle_status"] = "Đang di chuyển"
                 elif self._is_charging: self._last_data["api_vehicle_status"] = "Đang sạc"
                 else: self._last_data["api_vehicle_status"] = "Đang đỗ"
@@ -793,7 +798,6 @@ class VinFastAPI:
                     self._trip_start_soc = current_soc
                     self._trip_start_address = self._last_data.get("api_current_address", "Không xác định")
                     self._is_trip_active = True
-                    
                     self._last_data["api_trip_distance"] = 0.0
                     self._last_data["api_trip_gas_cost"] = 0
                     self._last_data["api_trip_charge_cost"] = 0
@@ -808,12 +812,10 @@ class VinFastAPI:
                     if self.gas_km_per_liter > 0:
                         self._last_data["api_trip_gas_cost"] = round((trip_dist / self.gas_km_per_liter) * self.gas_price, 0)
                     self._last_data["api_trip_charge_cost"] = round(trip_dist * self.ev_kwh_per_km * self.cost_per_kwh, 0)
-                    
                     if self._trip_start_time and self._trip_start_time > 0:
                         trip_hrs = (current_time - self._trip_start_time) / 3600.0
                         if trip_hrs > 0 and trip_dist > 0:
                             self._last_data["api_trip_avg_speed"] = round(trip_dist / trip_hrs, 1)
-
                     if getattr(self, '_trip_start_soc', None) is not None and self._trip_start_soc >= current_soc and trip_dist > 0:
                         cap = safe_float(self._last_data.get("api_static_capacity", 0))
                         if cap > 0:
@@ -827,16 +829,55 @@ class VinFastAPI:
                     curr_coord = f"{lat},{lon}"
                     if curr_coord != getattr(self, '_last_lat_lon', None): 
                         self._last_lat_lon = curr_coord
-                        self._last_data["api_current_address"] = f"Đang định vị GPS ({curr_coord})..."
+                        self._last_data["api_current_address"] = f"Đang định vị GPS ({curr_coord})...."
                         threading.Thread(target=self._update_location_async, args=(lat, lon), daemon=True).start()
                         
                         if getattr(self, '_is_trip_active', False) and speed > 0:
                             lat_f, lon_f = float(lat), float(lon)
-                            if not self._route_coords or (abs(self._route_coords[-1][0]-lat_f)>0.0001 or abs(self._route_coords[-1][1]-lon_f)>0.0001):
-                                self._route_coords.append([lat_f, lon_f, int(speed)])
-                                if len(self._route_coords) > 600: self._route_coords.pop(0)
-                                self._last_data["api_trip_route"] = json.dumps(self._route_coords)
+                            actual_speed_kmh = float(speed)
+                            
+                            if not self._route_coords:
+                                self._route_coords.append([lat_f, lon_f, int(actual_speed_kmh)])
+                                self._last_gps_time = current_time
+                            else:
+                                last_lat = self._route_coords[-1][0]
+                                last_lon = self._route_coords[-1][1]
+                                last_time = getattr(self, '_last_gps_time', current_time - 1)
+                                dt = current_time - last_time
+                                if dt <= 0: dt = 1 
+                                
+                                R = 6371000 
+                                phi1, phi2 = math.radians(last_lat), math.radians(lat_f)
+                                dphi = math.radians(lat_f - last_lat)
+                                dlambda = math.radians(lon_f - last_lon)
+                                a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+                                distance_m = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                                calc_speed_kmh = (distance_m / dt) * 3.6 
+                                
+                                final_lat, final_lon = lat_f, lon_f
+                                is_valid_point = True
 
+                                if actual_speed_kmh == 0 and distance_m > 5:
+                                    final_lat, final_lon = last_lat, last_lon
+                                    is_valid_point = False 
+                                elif actual_speed_kmh > 0:
+                                    if calc_speed_kmh > (actual_speed_kmh + 40):
+                                        y = math.sin(math.radians(lon_f - last_lon)) * math.cos(math.radians(lat_f))
+                                        x = math.cos(math.radians(last_lat)) * math.sin(math.radians(lat_f)) - math.sin(math.radians(last_lat)) * math.cos(math.radians(lat_f)) * math.cos(math.radians(lon_f - last_lon))
+                                        bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+                                        expected_distance_m = (actual_speed_kmh / 3.6) * dt
+                                        brng = math.radians(bearing)
+                                        lat1 = math.radians(last_lat)
+                                        lon1 = math.radians(last_lon)
+                                        lat2 = math.asin(math.sin(lat1) * math.cos(expected_distance_m / R) + math.cos(lat1) * math.sin(expected_distance_m / R) * math.cos(brng))
+                                        lon2 = lon1 + math.atan2(math.sin(brng) * math.sin(expected_distance_m / R) * math.cos(lat1), math.cos(expected_distance_m / R) - math.sin(lat1) * math.sin(lat2))
+                                        final_lat, final_lon = math.degrees(lat2), math.degrees(lon2)
+
+                                if is_valid_point and (distance_m > 2 or final_lat != lat_f):
+                                    self._route_coords.append([round(final_lat, 6), round(final_lon, 6), int(actual_speed_kmh)])
+                                    if len(self._route_coords) > 600: self._route_coords.pop(0) 
+                                    self._last_data["api_trip_route"] = json.dumps(self._route_coords)
+                                    self._last_gps_time = current_time 
                 if self.callbacks:
                     for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
