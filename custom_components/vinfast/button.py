@@ -18,6 +18,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         VinFastButton(api, "34186_00005_00001", "Nháy đèn", "mdi:car-light-high"),
         VinFastButton(api, "34186_00005_00002", "Bấm còi", "mdi:bugle"),
         VinFastButton(api, "34215_00005_00001", "Mở cốp", "mdi:car-back"),
+        # NÚT MỚI
+        VinFastButton(api, "find_stations", "Tìm trạm sạc", "mdi:ev-station"),
     ]
     async_add_entities(buttons)
 
@@ -29,15 +31,11 @@ class VinFastButton(ButtonEntity):
         self._attr_name = name
         self._attr_icon = icon
         
-        # =================================================================
         model_slug = slugify(getattr(api, "vehicle_model_display", "VF")).replace("_", "")
         vin_slug = api.vin.lower() if api.vin else "unknown"
         
-        # Ép Unique ID mới
         self._attr_unique_id = f"{model_slug}_{vin_slug}_btn_{command_key}"
-        # Ép Entity ID chuẩn
         self.entity_id = f"button.{model_slug}_{vin_slug}_{slugify(name)}"
-        # =================================================================
 
         veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
@@ -48,6 +46,10 @@ class VinFastButton(ButtonEntity):
         )
 
     async def async_press(self) -> None:
+        if self._command_key == "find_stations":
+            await self.hass.async_add_executor_job(self.api.fetch_nearby_stations)
+            return
+
         cmd_map = {
             "34213_00001_00001": ("Remote-Lock", {"34213_00001_00001": "1"}),
             "34213_00001_00002": ("Remote-UnLock", {"34213_00001_00002": "1"}),
