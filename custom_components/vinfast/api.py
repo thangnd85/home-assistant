@@ -56,11 +56,10 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError): return default
 
 class VinFastAPI:
-    # ĐÃ FIX: Thêm gemini_api_key="" vào tham số khởi tạo
     def __init__(self, email, password, vin=None, vehicle_name="Xe VinFast", options=None, gemini_api_key=""):
         self.email = email
         self.password = password
-        self.gemini_api_key = gemini_api_key # Nhận Key từ Config Flow UI
+        self.gemini_api_key = gemini_api_key
         self.access_token = None
         self.vin = vin
         self.user_id = None
@@ -328,7 +327,6 @@ class VinFastAPI:
         payload = {"commandType": command_type, "vinCode": self.vin, "params": params or {}}
         res = self._post_api("ccaraccessmgmt/api/v2/remote/app/command", payload)
         if res and res.status_code == 200:
-            _LOGGER.info(f"VinFast: [Remote] Lệnh {command_type} thành công!")
             threading.Thread(target=self._delayed_ping, daemon=True).start()
             return True
         return False
@@ -458,8 +456,7 @@ class VinFastAPI:
             res = self._post_api(f"ccaraccessmgmt/api/v1/telemetry/{self.vin}/list_resource", reqs)
             if res and res.status_code == 404:
                 self._post_api("ccaraccessmgmt/api/v1/telemetry/list_resource", reqs)
-        except Exception as e:
-            _LOGGER.error(f"VinFast: Lỗi register_resources: {e}")
+        except Exception: pass
 
     def get_address_from_osm(self, lat, lon):
         try:
@@ -527,7 +524,6 @@ class VinFastAPI:
 
     def _run_ai_advisor_async(self):
         try:
-            # ĐÃ SỬA: Đọc Key truyền từ UI (thông qua self.gemini_api_key)
             if not getattr(self, 'gemini_api_key', None) or self.gemini_api_key.strip() == "":
                 self._last_data["api_ai_advisor"] = "Vui lòng nhập Google Gemini API Key trong phần Cấu hình Integration (Config Flow) để AI có thể đánh giá."
                 if self.callbacks:
@@ -884,6 +880,22 @@ class VinFastAPI:
 
     def _on_disconnect(self, client, userdata, rc): pass
 
+    # =========================================================================
+    # LỌC NHIỄU GIÁ TRỊ RỚT MẠNG 0.0 (ANTI-DROP FILTER)
+    # =========================================================================
+    def _filter_critical_data(self, key, current_val, fallback_val):
+        if current_val is None: 
+            return fallback_val
+        # Chỉ áp dụng chống rớt 0 cho các biến cốt lõi (Pin, ODO, Range)
+        if key in ["34183_00001_00009", "34180_00001_00011", "34183_00001_00003", "34199_00000_00000", "34183_00001_00004", "34180_00001_00007"]:
+            try:
+                num_val = float(current_val)
+                # Nếu API trả về đúng số 0 tròn trĩnh, thì lấy lại giá trị cũ
+                if num_val == 0.0 and fallback_val is not None:
+                    return fallback_val
+            except Exception: pass
+        return current_val
+
     def _on_message(self, client, userdata, msg):
         try:
             self._last_mqtt_msg_time = time.time() 
@@ -907,7 +919,10 @@ class VinFastAPI:
                 val = item.get("value")
                 
                 if key == "34180_00001_00011" and isinstance(val, str) and "profile_email" in val: continue 
-                if key and val is not None: data_dict[key] = val
+                
+                if key and val is not None: 
+                    # Lọc chống rớt trước khi nạp vào Dict
+                    data_dict[key] = self._filter_critical_data(key, val, self._last_data.get(key))
             
             if data_dict:
                 current_time = time.time()
@@ -948,7 +963,7 @@ class VinFastAPI:
                 if "34180_00001_00010" in data_dict and data_dict["34180_00001_00010"]:
                     self._last_data["api_vehicle_name"] = str(data_dict["34180_00001_00010"])
 
-                current_soc = safe_float(data_dict.get("34183_00001_00009", data_dict.get("34180_00001_00011", self._last_data.get("34183_00001_00009", 0))))
+                current_soc = safe_float(self._last_data.get("34183_00001_00009", self._last_data.get("34180_00001_00011", 0)))
                 
                 c_status_1 = str(data_dict.get("34193_00001_00005", self._last_data.get("34193_00001_00005", "0")))
                 c_status_2 = str(data_dict.get("34183_00000_00001", self._last_data.get("34183_00000_00001", "0")))
@@ -1017,8 +1032,7 @@ class VinFastAPI:
                 
                 speed = safe_float(data_dict.get("34183_00001_00002", self._last_data.get("34183_00001_00002", 0)))
                 gear = str(data_dict.get("34183_00001_00001", self._last_data.get("34183_00001_00001", "1"))) 
-                odo = safe_float(data_dict.get("34183_00001_00003", self._last_data.get("34183_00001_00003", 0))) 
-                if odo == 0: odo = safe_float(data_dict.get("34199_00000_00000", self._last_data.get("34199_00000_00000", 0)))
+                odo = safe_float(self._last_data.get("34183_00001_00003", self._last_data.get("34199_00000_00000", 0))) 
                 
                 if odo > 0 and current_soc > 0:
                     if getattr(self, '_eff_soc', None) is None or current_soc > self._eff_soc:
