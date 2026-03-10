@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from requests.exceptions import RequestException
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, CONF_GEMINI_API_KEY
 from .api import VinFastAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -15,10 +15,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Thiết lập VinFast Integration từ Config Entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    email = entry.data.get("email")
-    password = entry.data.get("password")
+    # Lấy tài khoản và API key từ giao diện UI của HA
+    email = entry.data.get(CONF_EMAIL, entry.data.get("email"))
+    password = entry.data.get(CONF_PASSWORD, entry.data.get("password"))
+    gemini_key = entry.data.get(CONF_GEMINI_API_KEY, "")
 
-    api = VinFastAPI(email, password)
+    # Truyền API Key vào Class lõi
+    api = VinFastAPI(email, password, gemini_api_key=gemini_key, options=entry.options)
 
     try:
         # Bọc luồng mạng để tự động đợi nếu lúc Raspberry Pi vừa bật chưa có mạng

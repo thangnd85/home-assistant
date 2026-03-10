@@ -1,6 +1,7 @@
 DOMAIN = "vinfast"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
+CONF_GEMINI_API_KEY = "gemini_api_key"
 
 AUTH0_DOMAIN = "vin3s.au.auth0.com"
 AUTH0_CLIENT_ID = "jE5xt50qC7oIh1f32qMzA6hGznIU5mgH"
@@ -34,12 +35,13 @@ BASE_SENSORS = {
     "api_static_capacity": ("Dung lượng pin thiết kế", "kWh", "mdi:car-battery", "energy"),
     "api_static_range": ("Quãng đường công bố (Max)", "km", "mdi:map-marker-distance", "distance"),
     "api_battery_degradation": ("Độ chai pin (Theo SOH)", "kWh", "mdi:battery-minus", "energy"),
-    "api_est_range_degradation": ("Khả năng chai pin (Theo Range - Tham khảo)", "%", "mdi:battery-alert", None),
+    "api_est_range_degradation": ("Khả năng chai pin (Tham khảo)", "%", "mdi:battery-alert", None),
     "api_lifetime_efficiency": ("Hiệu suất tiêu thụ (Trung bình xe)", "kWh/100km", "mdi:leaf", None),
     "api_calc_max_range": ("Quãng đường thực tế (Đầy 100% pin)", "km", "mdi:map-marker-path", "distance"),
     "api_calc_remain_range": ("Quãng đường còn lại (Theo hiệu suất)", "km", "mdi:map-marker-distance", "distance"),
     "api_calc_range_per_percent": ("Quãng đường đi được mỗi 1% pin", "km", "mdi:ruler", "distance"),
     "api_best_efficiency_band": ("Dải tốc độ tối ưu nhất", None, "mdi:chart-bell-curve", None),
+    
     "api_last_charge_start_soc": ("% Pin lúc cắm sạc (Lần cuối)", "%", "mdi:battery-arrow-down", "battery"),
     "api_last_charge_end_soc": ("% Pin lúc rút sạc (Lần cuối)", "%", "mdi:battery-arrow-up", "battery"),
     "api_last_charge_duration": ("Thời gian cắm sạc (Lần cuối)", "min", "mdi:timer-sand", "duration"),
@@ -50,10 +52,20 @@ BASE_SENSORS = {
     "api_trip_charge_cost": ("Chi phí sạc chuyến đi", "VNĐ", "mdi:cash-fast", "monetary"),
     "api_total_gas_cost": ("Tổng chi phí xăng tương đương", "VNĐ", "mdi:gas-station", "monetary"),
     "api_trip_gas_cost": ("Chi phí xăng chuyến đi", "VNĐ", "mdi:gas-station", "monetary"),
-    "api_total_charge_sessions": ("Tổng số lần sạc", "lần", "mdi:ev-station", None),
+    
+    "api_total_charge_sessions": ("Số lần sạc tại trạm", "lần", "mdi:ev-station", None),
+    "api_home_charge_sessions": ("Số lần sạc tại nhà", "lần", "mdi:home-lightning-bolt", None),
+    "api_home_charge_kwh": ("Điện năng sạc tại nhà", "kWh", "mdi:home-battery", "energy"),
     "api_total_energy_charged": ("Tổng điện năng đã sạc", "kWh", "mdi:lightning-bolt", "energy"),
+    
     "api_vehicle_model": ("Tên dòng xe", None, "mdi:car", None),
     "api_vehicle_name": ("Tên định danh xe", None, "mdi:account-car", None),
+    
+    "api_outside_temp": ("Nhiệt độ ngoài trời (GPS)", "°C", "mdi:thermometer", "temperature"),
+    "api_weather_condition": ("Thời tiết hiện tại", None, "mdi:weather-partly-cloudy", None),
+    "api_hvac_load_estimate": ("Ước tính tải Điều hòa", None, "mdi:air-conditioner", None),
+    "api_ai_advisor": ("Cố vấn Xe điện AI", None, "mdi:robot-outline", None),
+
     "34183_00001_00003": ("Tổng ODO", "km", "mdi:counter", "distance"),
     "34199_00000_00000": ("Tổng ODO (Platform Cũ)", "km", "mdi:counter", "distance"),
     "00006_00001_00000": ("Vĩ độ (Latitude)", "°", "mdi:crosshairs-gps", None),
@@ -66,12 +78,11 @@ BASE_SENSORS = {
     "34205_00001_00001": ("Chế độ Giao xe (Valet)", None, "mdi:account-tie-hat", None),
     "34206_00001_00001": ("Chế độ Cắm trại (Camp)", None, "mdi:tent", None),
     "34207_00001_00001": ("Chế độ Thú cưng (Pet)", None, "mdi:paw", None),
-    "api_vehicle_image": ("Hình ảnh xe URL", None, "mdi:image", None),
     
-    # 3 BIẾN MỚI THÊM VÀO ĐỂ HIỂN THỊ BẢN ĐỒ VÀ TRẠM SẠC
+    "api_vehicle_image": ("Hình ảnh xe URL", None, "mdi:image", None),
     "api_trip_route": ("Lộ trình GPS", None, "mdi:map-marker-path", None),
     "api_nearby_stations": ("Trạm sạc lân cận", None, "mdi:ev-station", None),
-    "api_debug_info": ("System Debug Raw Data", None, "mdi:bug-check", None),
+    "api_debug_raw": ("System Debug Raw", None, "mdi:bug", None)
 }
 
 VF3_SENSORS = {

@@ -67,7 +67,7 @@ class VinFastSensor(SensorEntity):
         self._attr_unique_id = f"{model_slug}_{vin_slug}_{device_key}"
         self.entity_id = f"sensor.{model_slug}_{vin_slug}_{slugify(name)}"
         self._attr_native_value = None
-        self._attr_extra_state_attributes = {} # Biến lưu Attributes chủ động
+        self._attr_extra_state_attributes = {} 
 
         veh_name = getattr(api, 'vehicle_name', '')
         self._attr_device_info = DeviceInfo(
@@ -83,7 +83,6 @@ class VinFastSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        # Trả về luôn biến chứa Attributes đã được tạo ở process_new_data
         return self._attr_extra_state_attributes
 
     @callback
@@ -101,29 +100,33 @@ class VinFastSensor(SensorEntity):
             elif self._device_key == "api_nearby_stations":
                 try: self._attr_extra_state_attributes = {"stations": json.loads(self.api._last_data.get("api_nearby_stations", "[]"))}
                 except: self._attr_extra_state_attributes = {"stations": []}
-                
-            # ĐÂY LÀ CHỖ TẠO MẢNG CHO DEBUG RAW DATA
-            elif self._device_key == "api_debug_raw":
+
+            # ------ TẠO BẢNG SAO KÊ CHI TIẾT VÀO ATTRIBUTE CỦA SẠC TRẠM ------
+            elif self._device_key == "api_total_charge_sessions":
                 try:
-                    log_str = self.api._last_data.get("api_debug_changelog_json", "[]")
-                    raw_list = json.loads(log_str)
+                    history_str = self.api._last_data.get("api_charge_history_list", "[]")
+                    history_list = json.loads(history_str)
                     
-                    # Biến mảng JSON (dict) thành mảng Chuỗi (List of Strings)
-                    formatted_list = []
-                    for item in raw_list:
-                        time_str = item.get("time", "").split(" ")[1] if " " in item.get("time", "") else item.get("time", "")
-                        code = item.get("code", "")
-                        old_v = item.get("old_value", "")
-                        new_v = item.get("new_value", "")
-                        
-                        # Format đúng như ý bạn: "Time | Code : Old -> New"
-                        formatted_list.append(f"{time_str} | {code} : {old_v} ➔ {new_v}")
+                    formatted_history = []
+                    for item in history_list:
+                        date = item.get("date", "")
+                        address = item.get("address", "Không xác định")
+                        kwh = item.get("kwh", 0)
+                        dur = item.get("duration", 0)
+                        formatted_history.append(f"{date} | {kwh} kWh ({dur} phút) | {address}")
                         
                     self._attr_extra_state_attributes = {
-                        "Lịch sử mã thay đổi": formatted_list if formatted_list else ["Đang chờ nhận tín hiệu..."]
+                        "Lịch sử sạc trạm (10 lần gần nhất)": formatted_history if formatted_history else ["Chưa có dữ liệu sạc trạm công cộng"]
                     }
                 except Exception as e:
                     self._attr_extra_state_attributes = {"Lỗi": str(e)}
+            # ------------------------------------------------------------------
+                
+            elif self._device_key == "api_debug_raw":
+                try:
+                    log_str = self.api._last_data.get("api_debug_raw_json", "{}")
+                    self._attr_extra_state_attributes = {"Chi tiết": str(log_str)[:255]}
+                except Exception: pass
 
             elif self._device_key == "api_best_efficiency_band":
                 attrs = {}
@@ -169,11 +172,12 @@ class VinFastSensor(SensorEntity):
                 "api_calc_range_per_percent", "api_last_charge_energy", 
                 "api_last_charge_power", "api_last_charge_efficiency",
                 "api_est_range_degradation", "api_trip_avg_speed", 
-                "api_trip_energy_used", "api_trip_efficiency"
+                "api_trip_energy_used", "api_trip_efficiency",
+                "api_home_charge_kwh" 
             ]:
                 try: val = round(float(val), 2)
                 except (ValueError, TypeError): val = 0
-            elif self._device_key in ["api_last_charge_duration", "api_last_charge_start_soc", "api_last_charge_end_soc"]:
+            elif self._device_key in ["api_last_charge_duration", "api_last_charge_start_soc", "api_last_charge_end_soc", "api_total_charge_sessions", "api_home_charge_sessions"]:
                 try: val = round(float(val), 0)
                 except (ValueError, TypeError): val = 0
             elif self._device_key in ["10351_00001_00050", "10351_00002_00050", "10351_00003_00050", "10351_00004_00050", "10351_00005_00050", "10351_00006_00050"]:

@@ -2,7 +2,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
-from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, VEHICLE_SPECS
+from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, CONF_GEMINI_API_KEY, VEHICLE_SPECS
 
 def safe_int(val, default):
     try: return int(float(val))
@@ -21,9 +21,11 @@ class VinFastConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=user_input[CONF_EMAIL], data=user_input)
 
+        # Đã thêm CONF_GEMINI_API_KEY (không bắt buộc) vào Form đăng nhập
         data_schema = vol.Schema({
             vol.Required(CONF_EMAIL): str,
             vol.Required(CONF_PASSWORD): str,
+            vol.Optional(CONF_GEMINI_API_KEY, default=""): str, 
         })
         return self.async_show_form(step_id="user", data_schema=data_schema)
 
