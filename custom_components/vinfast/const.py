@@ -18,6 +18,8 @@ DEFAULT_GAS_KM_PER_LITER = 20
 
 VEHICLE_SPECS = {
     "VF 3": {"capacity": 18.64, "range": 210, "ev_kwh_per_km": 0.09, "gas_km_per_liter": 18.0},
+    "VF E34": {"capacity": 42.0, "range": 285, "ev_kwh_per_km": 0.15, "gas_km_per_liter": 14.0},
+    "VFE34": {"capacity": 42.0, "range": 285, "ev_kwh_per_km": 0.15, "gas_km_per_liter": 14.0},
     "VF 5": {"capacity": 37.23, "range": 326, "ev_kwh_per_km": 0.12, "gas_km_per_liter": 16.5},
     "VF 6": {"capacity": 59.6, "range": 399, "ev_kwh_per_km": 0.15, "gas_km_per_liter": 15.3},
     "VF 7": {"capacity": 75.3, "range": 499, "ev_kwh_per_km": 0.15, "gas_km_per_liter": 13.3},
@@ -26,7 +28,7 @@ VEHICLE_SPECS = {
 }
 
 # =========================================================================
-# VIRTUAL SENSORS: CẢM BIẾN TỔNG HỢP HIỂN THỊ UI (DÙNG CHUNG)
+# LỚP 1: VIRTUAL SENSORS (CẢM BIẾN TÍNH TOÁN DO MÃ TỰ TẠO)
 # =========================================================================
 VIRTUAL_SENSORS = {
     "api_vehicle_status": ("Trạng thái hoạt động", None, "mdi:car-info", None),
@@ -37,6 +39,7 @@ VIRTUAL_SENSORS = {
     "api_trip_efficiency": ("Hiệu suất tiêu thụ Trip", "kWh/100km", "mdi:leaf-circle", None),
     "api_static_capacity": ("Dung lượng pin thiết kế", "kWh", "mdi:car-battery", "energy"),
     "api_static_range": ("Quãng đường công bố (Max)", "km", "mdi:map-marker-distance", "distance"),
+    "api_soh_calculated": ("Sức khỏe pin (SOH Tính toán)", "%", "mdi:heart-pulse", "battery"),
     "api_battery_degradation": ("Độ chai pin (Theo SOH)", "kWh", "mdi:battery-minus", "energy"),
     "api_est_range_degradation": ("Khả năng chai pin (Tham khảo)", "%", "mdi:battery-alert", None),
     "api_lifetime_efficiency": ("Hiệu suất tiêu thụ (Trung bình xe)", "kWh/100km", "mdi:leaf", None),
@@ -67,106 +70,141 @@ VIRTUAL_SENSORS = {
     "api_vehicle_image": ("Hình ảnh xe URL", None, "mdi:image", None),
     "api_trip_route": ("Lộ trình GPS", None, "mdi:map-marker-path", None),
     "api_nearby_stations": ("Trạm sạc lân cận", None, "mdi:ev-station", None),
+    "api_public_charge_sessions": ("Số lần sạc tại trạm", "lần", "mdi:ev-station", None),
+    "api_home_charge_sessions": ("Số lần sạc tại nhà", "lần", "mdi:home-lightning-bolt-outline", None),
     "api_debug_raw": ("System Debug Raw", None, "mdi:bug", None)
 }
 
 # =========================================================================
-# TỪ ĐIỂN CẢM BIẾN VẬT LÝ CAN-BUS (CÔ LẬP THEO TỪNG XE)
+# LỚP 2: COMMON SENSORS (CẢM BIẾN MÃ GIỐNG HỆT NHAU TRÊN MỌI XE)
 # =========================================================================
-
-VF3_SENSORS = {
-    "10351_00002_00050": ("Cửa tài xế", None, "mdi:car-door", None),
-    "10351_00001_00050": ("Cửa phụ", None, "mdi:car-door", None),
-    "10351_00006_00050": ("Cốp sau", None, "mdi:car-door", None),
+COMMON_SENSORS = {
     "34213_00001_00003": ("Khóa tổng", None, "mdi:lock", None),
     "34234_00001_00003": ("Trạng thái An ninh", None, "mdi:shield-car", None),
     "34186_00005_00004": ("Đèn nháy cảnh báo", None, "mdi:car-light-alert", None),
     "34205_00001_00001": ("Chế độ Giao xe (Valet)", None, "mdi:account-tie-hat", None),
     "34206_00001_00001": ("Chế độ Cắm trại (Camp)", None, "mdi:tent", None),
     "34207_00001_00001": ("Chế độ Thú cưng (Pet)", None, "mdi:paw", None),
-    "34215_00002_00002": ("Cửa sổ tài xế", None, "mdi:window-open", None),
-    "34215_00001_00002": ("Cửa sổ phụ", None, "mdi:window-open", None),
+    "00006_00001_00000": ("Vĩ độ (Latitude)", "°", "mdi:crosshairs-gps", None),
+    "00006_00001_00001": ("Kinh độ (Longitude)", "°", "mdi:crosshairs-gps", None),
+    "00006_00001_00002": ("Độ cao (Altitude)", "m", "mdi:elevation-rise", None),
+    "00005_00001_00030": ("Phiên bản Phần mềm (FRP)", None, "mdi:update", None),
+    "34196_00001_00004": ("Phiên bản T-Box", None, "mdi:cellphone-link", None),
+    "34181_00001_00007": ("Biển số / Tên xe phụ", None, "mdi:card-text-outline", None),
+    
+    # Cửa vật lý cơ bản nhất xe nào cũng có
+    "10351_00002_00050": ("Cửa tài xế", None, "mdi:car-door", None),
+    "10351_00001_00050": ("Cửa phụ", None, "mdi:car-door", None),
+    "10351_00006_00050": ("Cốp sau", None, "mdi:car-door", None),
+}
+
+# =========================================================================
+# LỚP 3A: NỀN TẢNG A (VF3, VF5, e34, VF6, VF7)
+# =========================================================================
+PLATFORM_A_BASE = COMMON_SENSORS.copy()
+PLATFORM_A_BASE.update({
+    "34183_00001_00010": ("Tên định danh xe (MQTT)", None, "mdi:badge-account", None), # Đã bổ sung
     "34183_00001_00009": ("Phần trăm Pin", "%", "mdi:battery", "battery"),
     "34183_00001_00011": ("Quãng đường dự kiến", "km", "mdi:map-marker-distance", "distance"),
     "34183_00001_00005": ("Pin 12V (Ắc quy)", "%", "mdi:car-battery", "battery"),
     "34220_00001_00001": ("Sức khỏe pin (SOH)", "%", "mdi:heart-pulse", "battery"),
     "34193_00001_00005": ("Trạng thái sạc", None, "mdi:ev-station", None),
     "34193_00001_00007": ("Thời gian sạc còn lại", "min", "mdi:timer-outline", "duration"),
-    "34193_00001_00019": ("Mục tiêu sạc (Target)", "%", "mdi:battery-charging-100", "battery"),
     "34183_00001_00001": ("Vị trí cần số", None, "mdi:car-shift-pattern", None),
     "34183_00001_00002": ("Tốc độ hiện tại", "km/h", "mdi:speedometer", "speed"),
-    "34183_00001_00003": ("Tổng ODO", "km", "mdi:counter", "distance"),
-    "00006_00001_00000": ("Vĩ độ (Latitude)", "°", "mdi:crosshairs-gps", None),
-    "00006_00001_00001": ("Kinh độ (Longitude)", "°", "mdi:crosshairs-gps", None),
-    "00005_00001_00030": ("Phiên bản Phần mềm (FRP)", None, "mdi:update", None),
-    "34196_00001_00004": ("Phiên bản T-Box", None, "mdi:cellphone-link", None),
+    "34183_00001_00003": ("Tổng ODO (MQTT)", "km", "mdi:counter", "distance"), # Đã bổ sung chuẩn
+    "34183_00001_00004": ("Điện áp / Tiêu thụ (00004)", None, "mdi:flash", None), # Bổ sung thêm
     "34183_00001_00007": ("Nhiệt độ ngoài trời", "°C", "mdi:thermometer", "temperature"),
     "34183_00001_00015": ("Nhiệt độ trong xe", "°C", "mdi:thermometer", "temperature"),
     "34224_00001_00005": ("Nhiệt độ điều hòa cài đặt", "°C", "mdi:thermostat", "temperature"),
     "34224_00001_00007": ("Mức quạt gió", None, "mdi:fan", None),
-}
+})
 
-VF567_SENSORS = {
-    "10351_00002_00050": ("Cửa tài xế", None, "mdi:car-door", None),
-    "10351_00001_00050": ("Cửa phụ", None, "mdi:car-door", None),
+# --- DÒNG VF 3 ---
+VF3_SENSORS = PLATFORM_A_BASE.copy()
+VF3_SENSORS.update({
+    "34193_00001_00019": ("Mục tiêu sạc (Target)", "%", "mdi:battery-charging-100", "battery"),
+})
+
+# --- DÒNG VF 5 ---
+VF5_SENSORS = PLATFORM_A_BASE.copy()
+VF5_SENSORS.update({
     "10351_00004_00050": ("Cửa sau trái", None, "mdi:car-door", None),
     "10351_00003_00050": ("Cửa sau phải", None, "mdi:car-door", None),
     "10351_00005_00050": ("Nắp Capo", None, "mdi:car-door", None),
-    "10351_00006_00050": ("Cốp sau", None, "mdi:car-door", None),
-    "34213_00001_00003": ("Khóa tổng", None, "mdi:lock", None),
-    "34234_00001_00003": ("Trạng thái An ninh", None, "mdi:shield-car", None),
-    "34186_00005_00004": ("Đèn nháy cảnh báo", None, "mdi:car-light-alert", None),
-    "34205_00001_00001": ("Chế độ Giao xe (Valet)", None, "mdi:account-tie-hat", None),
-    "34206_00001_00001": ("Chế độ Cắm trại (Camp)", None, "mdi:tent", None),
-    "34207_00001_00001": ("Chế độ Thú cưng (Pet)", None, "mdi:paw", None),
-    "34215_00001_00002": ("Cửa sổ tài xế", None, "mdi:window-open", None),
-    "34215_00002_00002": ("Cửa sổ phụ", None, "mdi:window-open", None),
+    "34215_00002_00002": ("Cửa sổ tài xế", None, "mdi:window-open", None),
+    "34215_00001_00002": ("Cửa sổ phụ", None, "mdi:window-open", None),
     "34215_00003_00002": ("Cửa sổ sau trái", None, "mdi:window-open", None),
     "34215_00004_00002": ("Cửa sổ sau phải", None, "mdi:window-open", None),
-    "34183_00001_00009": ("Phần trăm Pin", "%", "mdi:battery", "battery"),
-    "34183_00001_00011": ("Quãng đường dự kiến", "km", "mdi:map-marker-distance", "distance"),
-    "34220_00001_00001": ("Sức khỏe pin (SOH)", "%", "mdi:heart-pulse", "battery"),
-    "34193_00001_00005": ("Trạng thái sạc", None, "mdi:ev-station", None),
-    "34193_00001_00007": ("Thời gian sạc còn lại", "min", "mdi:timer-outline", "duration"),
     "34193_00001_00014": ("Mục tiêu sạc (Target)", "%", "mdi:battery-charging-100", "battery"),
-    "34183_00001_00001": ("Vị trí cần số", None, "mdi:car-shift-pattern", None),
-    "34183_00001_00002": ("Tốc độ hiện tại", "km/h", "mdi:speedometer", "speed"),
-    "34183_00001_00003": ("Tổng ODO", "km", "mdi:counter", "distance"),
-    "00006_00001_00000": ("Vĩ độ (Latitude)", "°", "mdi:crosshairs-gps", None),
-    "00006_00001_00001": ("Kinh độ (Longitude)", "°", "mdi:crosshairs-gps", None),
-    "00005_00001_00030": ("Phiên bản Phần mềm (FRP)", None, "mdi:update", None),
-    "34183_00001_00016": ("Áp suất lốp (Trước Trái)", "bar", "mdi:tire", "pressure"),
-    "34183_00001_00017": ("Áp suất lốp (Trước Phải)", "bar", "mdi:tire", "pressure"),
-    "34183_00001_00018": ("Áp suất lốp (Sau Trái)", "bar", "mdi:tire", "pressure"),
-    "34183_00001_00019": ("Áp suất lốp (Sau Phải)", "bar", "mdi:tire", "pressure"),
     "34183_00001_00029": ("Phanh tay điện tử", None, "mdi:car-brake-parking", None),
     "34184_00001_00004": ("Trạng thái Điều hòa", None, "mdi:fan", None),
-}
+})
 
-VF89_SENSORS = {
-    "10351_00002_00050": ("Cửa tài xế", None, "mdi:car-door", None),
-    "10351_00001_00050": ("Cửa phụ", None, "mdi:car-door", None),
+# --- DÒNG VFe34, VF 6, VF 7 ---
+VF67_SENSORS = VF5_SENSORS.copy()
+VF67_SENSORS.update({
+    "34183_00001_00016": ("Áp suất lốp Trước Trái", "bar", "mdi:tire", "pressure"),
+    "34183_00001_00017": ("Áp suất lốp Trước Phải", "bar", "mdi:tire", "pressure"),
+    "34183_00001_00018": ("Áp suất lốp Sau Trái", "bar", "mdi:tire", "pressure"),
+    "34183_00001_00019": ("Áp suất lốp Sau Phải", "bar", "mdi:tire", "pressure"),
+})
+VFE34_SENSORS = VF67_SENSORS.copy()
+
+# =========================================================================
+# LỚP 3B: NỀN TẢNG B (VF8, VF9) - ĐÃ BỔ SUNG ĐẦY ĐỦ NHƯ TÀI LIỆU
+# =========================================================================
+VF89_SENSORS = COMMON_SENSORS.copy()
+VF89_SENSORS.update({
+    # Cửa và Kính
     "10351_00004_00050": ("Cửa sau trái", None, "mdi:car-door", None),
     "10351_00003_00050": ("Cửa sau phải", None, "mdi:car-door", None),
     "10351_00005_00050": ("Nắp Capo", None, "mdi:car-door", None),
-    "10351_00006_00050": ("Cốp sau", None, "mdi:car-door", None),
-    "34213_00001_00003": ("Khóa tổng", None, "mdi:lock", None),
-    "34234_00001_00003": ("Trạng thái An ninh", None, "mdi:shield-car", None),
-    "34186_00005_00004": ("Đèn nháy cảnh báo", None, "mdi:car-light-alert", None),
+    "34215_00002_00002": ("Cửa sổ tài xế", None, "mdi:window-open", None),
+    "34215_00001_00002": ("Cửa sổ phụ", None, "mdi:window-open", None),
+    "34215_00003_00002": ("Cửa sổ sau trái", None, "mdi:window-open", None),
+    "34215_00004_00002": ("Cửa sổ sau phải", None, "mdi:window-open", None),
+    
+    # BCM & Nhiệt độ (Dùng chung CAN với Platform A)
+    "34183_00001_00005": ("Pin 12V (Ắc quy)", "%", "mdi:car-battery", "battery"),
+    "34220_00001_00001": ("Sức khỏe pin (SOH)", "%", "mdi:heart-pulse", "battery"),
+    "34183_00001_00007": ("Nhiệt độ ngoài trời", "°C", "mdi:thermometer", "temperature"),
+    "34183_00001_00015": ("Nhiệt độ trong xe", "°C", "mdi:thermometer", "temperature"),
+    "34224_00001_00005": ("Nhiệt độ điều hòa cài đặt", "°C", "mdi:thermostat", "temperature"),
+    "34224_00001_00007": ("Mức quạt gió", None, "mdi:fan", None),
+    
+    # CAN ĐẶC THÙ NỀN TẢNG B (VF8/9) - ĐÃ BỔ SUNG NAME & ODO
+    "34180_00001_00010": ("Tên định danh xe (MQTT)", None, "mdi:badge-account", None),
     "34180_00001_00011": ("Phần trăm Pin", "%", "mdi:battery", "battery"),
     "34180_00001_00007": ("Quãng đường dự kiến", "km", "mdi:map-marker-distance", "distance"),
     "34183_00000_00001": ("Trạng thái sạc", None, "mdi:ev-station", None),
     "34183_00000_00004": ("Thời gian sạc còn lại", "min", "mdi:timer-outline", "duration"),
     "34183_00000_00012": ("Công suất sạc", "kW", "mdi:flash", "power"),
+    "34183_00000_00015": ("Điện áp sạc", "V", "mdi:flash-outline", "voltage"),
+    "34183_00000_00016": ("Dòng điện sạc", "A", "mdi:current-ac", "current"),
     "34193_00001_00012": ("Mục tiêu sạc (Target)", "%", "mdi:battery-charging-100", "battery"),
     "34187_00000_00000": ("Vị trí cần số", None, "mdi:car-shift-pattern", None),
     "34188_00000_00000": ("Tốc độ hiện tại", "km/h", "mdi:speedometer", "speed"),
-    "34199_00000_00000": ("Tổng ODO", "km", "mdi:counter", "distance"),
-    "00006_00001_00000": ("Vĩ độ (Latitude)", "°", "mdi:crosshairs-gps", None),
-    "00006_00001_00001": ("Kinh độ (Longitude)", "°", "mdi:crosshairs-gps", None),
-    "00005_00001_00030": ("Phiên bản Phần mềm (FRP)", None, "mdi:update", None),
-    "34190_00000_00001": ("Áp suất lốp (Trước Trái)", "bar", "mdi:tire", "pressure"),
-    "34190_00001_00001": ("Áp suất lốp (Trước Phải)", "bar", "mdi:tire", "pressure"),
-    "34190_00002_00001": ("Áp suất lốp (Sau Trái)", "bar", "mdi:tire", "pressure"),
-    "34190_00003_00001": ("Áp suất lốp (Sau Phải)", "bar", "mdi:tire", "pressure"),
+    "34199_00000_00000": ("Tổng ODO (MQTT)", "km", "mdi:counter", "distance"),
+    "34183_00001_00029": ("Phanh tay điện tử", None, "mdi:car-brake-parking", None),
+    "34184_00001_00004": ("Trạng thái Điều hòa", None, "mdi:fan", None),
+    
+    # Cảm biến lốp định danh riêng
+    "34190_00000_00001": ("Áp suất lốp Trước Trái", "bar", "mdi:tire", "pressure"),
+    "34190_00001_00001": ("Áp suất lốp Trước Phải", "bar", "mdi:tire", "pressure"),
+    "34190_00002_00001": ("Áp suất lốp Sau Trái", "bar", "mdi:tire", "pressure"),
+    "34190_00003_00001": ("Áp suất lốp Sau Phải", "bar", "mdi:tire", "pressure"),
+})
+
+# ==========================================================
+# BẢNG TỪ ĐIỂN CÁC MÃ LỆNH ĐIỀU KHIỂN THỰC TẾ
+# ==========================================================
+KNOWN_COMMANDS = {
+    1: ("Khóa cửa", "mdi:lock", "khoa_cua"),
+    2: ("Mở cửa", "mdi:lock-open", "mo_cua"),
+    3: ("Bấm còi", "mdi:bullhorn", "bam_coi"),
+    4: ("Nháy đèn", "mdi:car-light-high", "nhay_den"),
+    5: ("Bật điều hòa", "mdi:fan", "bat_dieu_hoa"),
+    6: ("Tắt điều hòa", "mdi:fan-off", "tat_dieu_hoa"),
+    7: ("Mở cốp", "mdi:car-back", "mo_cop"),
 }
