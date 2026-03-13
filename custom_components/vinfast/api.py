@@ -84,7 +84,6 @@ class VinFastAPI:
         self._last_actual_move_time = time.time()
         self._last_lat_lon = ""
         
-        # BẢN VÁ V2.0.7: Biến quản lý trạng thái T-Box ngủ
         self._vehicle_offline = False
         self._last_auto_wakeup_time = 0
         
@@ -102,7 +101,10 @@ class VinFastAPI:
         self._eff_time = None
         self._eff_speeds = []
         self._eff_stats = {}
+        
+        # Biến đếm thời gian chống Spam AI
         self._last_ai_anomaly_time = 0
+        self._last_ai_weather_time = 0
         
         self._charge_start_time = time.time()
         self._charge_start_soc = 0.0
@@ -168,7 +170,8 @@ class VinFastAPI:
                 soc_val = parts[1]
                 self.inject_mock_data([{"deviceKey": "34183_00001_00009", "value": soc_val}, {"deviceKey": "34180_00001_00011", "value": soc_val}])
         elif action == "ai":
-            threading.Thread(target=self._run_ai_advisor_async, args=("trip",), daemon=True).start()
+            trip_data = {"dist": 15.5, "drop": 6.0}
+            threading.Thread(target=self._run_ai_advisor_async, args=("trip", trip_data), daemon=True).start()
 
     def _get_base_headers(self, vin_override=None):
         request_vin = vin_override or self.vin
@@ -369,6 +372,16 @@ class VinFastAPI:
                     elif temp < 22: hvac = "Sưởi ấm Nhẹ"
                     else: hvac = "Lý tưởng (Tiết kiệm Pin)"
                     self._last_data["api_hvac_load_estimate"] = hvac
+                    
+                    # ==============================================================
+                    # AI ADVISOR: CẢNH BÁO THỜI TIẾT CỰC ĐOAN (Cooldown 30 phút)
+                    # ==============================================================
+                    if now - getattr(self, '_last_ai_weather_time', 0) > 1800:
+                        if temp >= 38 or temp <= 15 or code in [80, 81, 82, 95, 96, 99]:
+                            self._last_ai_weather_time = now
+                            weather_data = {"temp": temp, "cond": condition}
+                            threading.Thread(target=self._run_ai_advisor_async, args=("weather", weather_data), daemon=True).start()
+
                     self._save_state()
                     if self.callbacks:
                         for cb in self.callbacks: cb(self._last_data)
@@ -420,6 +433,7 @@ class VinFastAPI:
                         self._eff_time = mem.get("eff_time", None)
                         self._eff_stats = mem.get("eff_stats", {})
                         self._last_ai_anomaly_time = mem.get("last_ai_anomaly_time", 0)
+                        self._last_ai_weather_time = mem.get("last_ai_weather_time", 0)
                         
                         lat_start = self._last_data.get("api_last_lat")
                         lon_start = self._last_data.get("api_last_lon")
@@ -444,7 +458,8 @@ class VinFastAPI:
                     "eff_gps_dist": getattr(self, '_eff_gps_dist', 0.0),
                     "eff_time": getattr(self, '_eff_time', None),
                     "eff_stats": getattr(self, '_eff_stats', {}),
-                    "last_ai_anomaly_time": getattr(self, '_last_ai_anomaly_time', 0)
+                    "last_ai_anomaly_time": getattr(self, '_last_ai_anomaly_time', 0),
+                    "last_ai_weather_time": getattr(self, '_last_ai_weather_time', 0)
                 },
                 "unix_time": time.time()
             }
@@ -490,7 +505,10 @@ class VinFastAPI:
                     json.dump(trips, f, ensure_ascii=False)
         except Exception: pass
 
-    def _run_ai_advisor_async(self, mode="trip", anomaly_data=None):
+    # =========================================================================
+    # AI ADVISOR TỐI ƯU VỚI THUẬT TOÁN MỚI (km / 1% Pin)
+    # =========================================================================
+    def _run_ai_advisor_async(self, mode="trip", data_payload=None):
         try:
             if not getattr(self, 'gemini_api_key', None) or self.gemini_api_key.strip() == "":
                 self._last_data["api_ai_advisor"] = "Vui lòng nhập Google Gemini API Key để AI đánh giá."
@@ -502,44 +520,57 @@ class VinFastAPI:
             cond = self._last_data.get("api_weather_condition", "Không rõ")
             hvac = self._last_data.get("api_hvac_load_estimate", "Bình thường")
             soc_end = safe_float(self._last_data.get("34183_00001_00009", self._last_data.get("34180_00001_00011", 50)))
+            std_range = safe_float(self._last_data.get("api_static_range", 210))
+            expected_km_per_1 = round(std_range / 100.0, 2) if std_range > 0 else 2.1
 
-            if mode == "anomaly" and anomaly_data:
-                dist = round(anomaly_data['dist'], 2)
-                expected = round(anomaly_data['expected'], 2)
-                spd = round(anomaly_data['speed'], 1)
+            prompt = ""
+
+            if mode == "weather" and data_payload:
+                w_temp = data_payload.get('temp', temp)
+                w_cond = data_payload.get('cond', cond)
                 prompt = (
-                    f"CẢNH BÁO THỜI GIAN THỰC: Xe điện vừa sụt 1% pin nhưng chỉ đi được {dist}km "
-                    f"(mức chuẩn lý tưởng của nhà sản xuất là {expected}km/1%). "
-                    f"Tốc độ chạy trung bình lúc này: {spd}km/h. "
-                    f"Môi trường: Nhiệt độ {temp} độ C, {cond}. Tải điều hòa đang ở mức: {hvac}. "
-                    "Bạn hãy đóng vai Cố vấn AI trên xe, viết MỘT câu tiếng Việt cực kỳ ngắn gọn (dưới 50 từ) "
-                    "nhận xét nguyên nhân gây tốn pin (do tốc độ, nhiệt độ hay điều hòa) và đưa ra lời khuyên khẩn cấp cho tài xế."
+                    f"CẢNH BÁO THỜI TIẾT CỰC ĐOAN: Nhiệt độ ngoài trời đang là {w_temp} độ C, thời tiết: {w_cond}. "
+                    f"Đóng vai chuyên gia AI của xe VinFast, viết MỘT câu tiếng Việt cực kỳ ngắn gọn (dưới 40 từ) "
+                    "khuyên tài xế cách chỉnh điều hòa và lái xe để an toàn và tiết kiệm pin nhất lúc này."
                 )
-                self._last_data["api_ai_advisor"] = f"⚠️ Phát hiện sụt pin nhanh! Đang chờ AI phân tích (1% đi được {dist}km)..."
-                if self.callbacks:
-                    for cb in self.callbacks: cb(self._last_data)
+                self._last_data["api_ai_advisor"] = f"☁️ Thời tiết khắc nghiệt ({w_temp}°C). Đang gọi AI tư vấn..."
+                
+            elif mode == "anomaly" and data_payload:
+                dist = round(data_payload.get('dist', 0), 2)
+                spd = round(data_payload.get('speed', 0), 1)
+                prompt = (
+                    f"CẢNH BÁO HAO PIN: Xe điện vừa sụt 1% pin nhưng chỉ đi được {dist}km "
+                    f"(mức chuẩn lý tưởng của nhà sản xuất công bố là {expected_km_per_1} km/1%). "
+                    f"Tốc độ chạy trung bình lúc này: {spd}km/h. Tải điều hòa: {hvac}. "
+                    "Bạn hãy đóng vai Cố vấn AI trên xe, viết MỘT câu tiếng Việt cực kỳ ngắn gọn (dưới 40 từ) "
+                    "nhận xét nguyên nhân gây tốn pin (do tốc độ hay điều hòa) và đưa ra lời khuyên khẩn cấp."
+                )
+                self._last_data["api_ai_advisor"] = f"⚠️ Sụt pin nhanh! (1% đi được {dist}km). Đang chờ AI phân tích..."
+
             else:
-                dist = float(self._last_data.get("api_trip_distance", 0.0))
+                dist = data_payload.get('dist', 0) if data_payload else float(self._last_data.get("api_trip_distance", 0.0))
+                drop = data_payload.get('drop', 0) if data_payload else 0
+                
                 if dist < 0.05: 
-                    self._last_data["api_ai_advisor"] = f"Hệ thống đang đợi... Chuyến đi hiện tại ({dist}km) quá ngắn. Cần chạy > 0.05km để AI phân tích."
+                    self._last_data["api_ai_advisor"] = f"Hệ thống đang đợi... Chuyến đi hiện tại ({dist}km) quá ngắn để phân tích."
                     if self.callbacks:
                         for cb in self.callbacks: cb(self._last_data)
                     return 
 
-                self._last_data["api_ai_advisor"] = "🔄 Đang gửi dữ liệu chuyến đi cho Google Gemini phân tích..."
-                if self.callbacks:
-                    for cb in self.callbacks: cb(self._last_data)
-
-                eff = self._last_data.get("api_trip_efficiency", 0)
+                actual_km_per_1 = round(dist / drop, 2) if drop > 0 else dist
                 spd = self._last_data.get("api_trip_avg_speed", 0)
                 
                 prompt = (
-                    f"Đóng vai một kỹ sư phân tích xe điện chuyên nghiệp. Xe vừa hoàn thành chuyến đi {dist}km. "
-                    f"Tốc độ trung bình {spd}km/h. Hiệu suất tiêu thụ: {eff} kWh/100km. Pin còn lại: {soc_end}%. "
-                    f"Môi trường: Nhiệt độ {temp} độ C, {cond}. Tải điều hòa: {hvac}. "
-                    "Hãy viết 1 đoạn văn tiếng Việt ngắn gọn (dưới 100 từ), đánh giá xem hiệu suất này là tốt hay kém "
-                    "và đưa ra 1 lời khuyên ngắn. Trả lời trực tiếp."
+                    f"Đóng vai kỹ sư phân tích xe điện. Chuyến đi vừa hoàn thành dài {round(dist,2)}km, tiêu hao {round(drop,1)}% pin. "
+                    f"Hiệu suất thực tế đạt: {actual_km_per_1} km / 1% pin. (Thông số chuẩn của hãng là {expected_km_per_1} km / 1%). "
+                    f"Tốc độ trung bình {spd}km/h. Môi trường: {temp}°C, {cond}. Tải điều hòa: {hvac}. "
+                    "Hãy viết 1 đoạn văn tiếng Việt ngắn gọn (dưới 50 từ), đánh giá xem hiệu suất chuyến đi này là xuất sắc, bình thường hay kém "
+                    "và đưa ra 1 lời khuyên."
                 )
+                self._last_data["api_ai_advisor"] = "🔄 Đang tổng kết chuyến đi. Gửi dữ liệu cho AI phân tích..."
+
+            if self.callbacks:
+                for cb in self.callbacks: cb(self._last_data)
 
             clean_key = self.gemini_api_key.strip()
             url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
@@ -565,9 +596,6 @@ class VinFastAPI:
                 for cb in self.callbacks: cb(self._last_data)
         except Exception: pass
 
-    # =========================================================================
-    # THUẬT TOÁN "CUỐN CHIẾU" LẤY TẤT CẢ LỊCH SỬ & CHỐNG 0 ẢO (V2.0 FINAL)
-    # =========================================================================
     def fetch_charging_history(self):
         max_retries = 5 
         attempt = 0
@@ -588,7 +616,6 @@ class VinFastAPI:
                     "X-TIMESTAMP": str(ts)
                 })
                 
-                # Bắt đầu lấy từ 01/01/2024
                 payload = {"orderStatus": [3, 5, 7], "startTime": 1704067200000, "endTime": ts}
                 
                 all_sessions = []
@@ -596,7 +623,7 @@ class VinFastAPI:
                 size = 50
                 success_fetch = False
                 
-                while page < 50: # Giới hạn tối đa 50 trang (2500 lần sạc)
+                while page < 50: 
                     res = requests.post(f"{API_BASE}/{api_path}?page={page}&size={size}", headers=headers, json=payload, timeout=20)
                     
                     if res and res.status_code == 200:
@@ -608,27 +635,20 @@ class VinFastAPI:
                             content = data
                             
                         all_sessions.extend(content)
-                        
-                        # Nếu số lượng trả về ít hơn size -> Đã hết trang
                         if len(content) < size:
                             success_fetch = True
                             break 
                         page += 1
-                        time.sleep(0.5) # Tránh bị rate-limit
+                        time.sleep(0.5) 
                     else:
-                        _LOGGER.debug(f"VinFast: Lỗi HTTP trang {page}. Đang thử lại toàn bộ...")
                         break 
                         
                 if success_fetch:
-                    # Lọc bỏ các bản ghi bị lỗi (sạc 0 kWh)
                     valid_sessions = sorted([s for s in all_sessions if safe_float(s.get("totalKWCharged", 0)) > 0], key=lambda x: safe_float(x.get("pluggedTime", 0)), reverse=True)
-                    
                     actual_public_sessions = len(valid_sessions)
                     prev_public_count = int(self._last_data.get("api_public_charge_sessions", 0))
                     
-                    # KIỂM TRA AN TOÀN: Chỉ lưu nếu số lần sạc LỚN HƠN HOẶC BẰNG số cũ
                     if actual_public_sessions >= prev_public_count or prev_public_count == 0:
-                        
                         detailed_history = []
                         for s in valid_sessions[:10]:
                             addr = s.get("chargingStationAddress", "Trạm sạc VinFast")
@@ -640,13 +660,10 @@ class VinFastAPI:
                             detailed_history.append({"date": date_str, "address": addr, "kwh": kwh, "duration": dur})
                         
                         self._last_data["api_charge_history_list"] = json.dumps(detailed_history)
-                        
-                        # LƯU CHÍNH THỨC SỐ LẦN SẠC
                         self._last_data["api_public_charge_sessions"] = actual_public_sessions
                         home_sessions = int(self._last_data.get("api_home_charge_sessions", 0))
                         self._last_data["api_total_charge_sessions"] = actual_public_sessions + home_sessions
                         
-                        # LƯU CHÍNH THỨC ĐIỆN NĂNG (kWh)
                         public_energy = sum(safe_float(s.get("totalKWCharged", 0)) for s in valid_sessions)
                         self._last_data["api_public_charge_energy"] = round(public_energy, 2)
                         home_kwh = safe_float(self._last_data.get("api_home_charge_kwh", 0.0))
@@ -669,12 +686,8 @@ class VinFastAPI:
                         self._save_state()
                         if self.callbacks:
                             for cb in self.callbacks: cb(self._last_data)
-                            
-                        _LOGGER.info(f"VinFast: Tải lịch sử sạc THÀNH CÔNG ({actual_public_sessions} lần, tổng {round(public_energy,2)} kWh).")
                         break 
-                        
                     else:
-                        _LOGGER.warning(f"VinFast API lỗi: Trả về {actual_public_sessions} lần (Nhỏ hơn số cũ {prev_public_count}). Đang thử lại...")
                         time.sleep(10)
                         continue
                 else:
@@ -682,7 +695,6 @@ class VinFastAPI:
                     continue
                     
             except Exception as e:
-                _LOGGER.debug(f"VinFast: Ngoại lệ khi lấy lịch sử sạc: {e}. Thử lại sau 10s...")
                 time.sleep(10)
 
     def fetch_nearby_stations(self):
@@ -839,13 +851,24 @@ class VinFastAPI:
                         _LOGGER.warning("VinFast: Xe đang Offline (Ngủ sâu). Tiến hành gọi HTTP PING Wakeup T-Box...")
                         self.register_resources() 
 
+                # =====================================================================
+                # BẢN VÁ: TỰ ĐỘNG CHỐT CHUYẾN ĐI CHỈ KHI DỪNG HẲN (SPEED=0) QUÁ 5 PHÚT
+                # =====================================================================
                 time_since_move = now - getattr(self, '_last_actual_move_time', now)
-                if getattr(self, '_is_trip_active', False) and time_since_move >= 300:
-                    self._is_moving = False 
+                if getattr(self, '_is_trip_active', False) and not getattr(self, '_is_moving', False) and time_since_move >= 300:
                     self._is_trip_active = False 
                     self._save_trip_history()
+                    
                     trip_dist = float(self._last_data.get("api_trip_distance", 0))
-                    if trip_dist >= 0.05: threading.Thread(target=self._run_ai_advisor_async, args=("trip",), daemon=True).start()
+                    soc_start = getattr(self, '_trip_start_soc', 100.0)
+                    soc_end = safe_float(self._last_data.get("34183_00001_00009", self._last_data.get("34180_00001_00011", 50)))
+                    soc_drop = soc_start - soc_end
+                    
+                    # Gọi AI Phân tích Trip (Bằng dữ liệu hiệu suất mới)
+                    if trip_dist >= 0.5: 
+                        trip_data = {"dist": trip_dist, "drop": soc_drop}
+                        threading.Thread(target=self._run_ai_advisor_async, args=("trip", trip_data), daemon=True).start()
+                        
                     self._trip_start_odo = 0.0
                     self._trip_start_time = time.time()
                     self._route_coords = []
@@ -932,21 +955,18 @@ class VinFastAPI:
                 gear = str(self._last_data.get("34183_00001_00001", "1"))
                 speed = safe_float(self._last_data.get("34183_00001_00002", 0))
 
-            if gear == "1":
-                self._is_moving = False
-                base_status = "Đang đỗ"
-                is_mechanically_moving = False
-            elif speed > 0 or gear in ["2", "4", "D", "R"]:
+            # =====================================================================
+            # BẢN VÁ: CẬP NHẬT BIẾN IS_MOVING CHÍNH XÁC ĐỂ TRÌ HOÃN NGẮT TRIP
+            # =====================================================================
+            if speed > 0 or gear in ["2", "4", "D", "R"]:
                 self._is_moving = True
                 self._last_actual_move_time = current_time
                 base_status = "Đang di chuyển"
-                is_mechanically_moving = True
             else:
                 self._is_moving = False
-                base_status = "Đang dừng"
-                is_mechanically_moving = False
+                base_status = "Đang đỗ" if gear == "1" else "Đang dừng"
 
-            if is_mechanically_moving and not getattr(self, '_is_trip_active', False):
+            if self._is_moving and not getattr(self, '_is_trip_active', False):
                 self._trip_start_time = current_time
                 self._trip_start_soc = current_soc
                 self._is_trip_active = True
@@ -1042,12 +1062,15 @@ class VinFastAPI:
                                 max_e, best_b = eff, k
                     if max_e > 0: self._last_data["api_best_efficiency_band"] = f"{best_b} km/h ({round(max_e, 2)} km/1%)"
 
+                    # =====================================================================
+                    # AI ADVISOR: CẢNH BÁO SỤT PIN BẤT THƯỜNG (Dựa trên KM / 1%)
+                    # =====================================================================
                     max_range = safe_float(self._last_data.get("api_static_range", 0))
                     if max_range > 0 and drop_amount >= 1.0:
                         expected_dist_per_1 = max_range / 100.0
-                        if dist_km < (expected_dist_per_1 * 0.70):
+                        if dist_km < (expected_dist_per_1 * 0.70): # Sụt pin quá nhanh (chỉ đạt < 70% định mức)
                             now = time.time()
-                            if now - getattr(self, '_last_ai_anomaly_time', 0) > 900:
+                            if now - getattr(self, '_last_ai_anomaly_time', 0) > 900: # Cooldown 15 phút
                                 self._last_ai_anomaly_time = now
                                 start_t = getattr(self, '_eff_time', None) or (now - 60)
                                 time_taken_hrs = (now - start_t) / 3600.0
@@ -1062,13 +1085,8 @@ class VinFastAPI:
                 self._eff_speeds = []
 
         try:
-            if gear == "1" and getattr(self, '_is_trip_active', False):
-                self._is_trip_active = False
-                self._save_trip_history()
-                
-                trip_dist = float(self._last_data.get("api_trip_distance", 0))
-                if trip_dist >= 0.05: 
-                    threading.Thread(target=self._run_ai_advisor_async, args=("trip",), daemon=True).start()
+            # GHI CHÚ: Lệnh ngắt Trip đã được chuyển vào Watchdog ở _api_polling_loop 
+            # để loại bỏ tình trạng ngắt nhầm khi xe mới về P vài chục giây.
 
             if self._model_group == "VF89":
                 c_status = str(self._last_data.get("34183_00000_00001", "0"))

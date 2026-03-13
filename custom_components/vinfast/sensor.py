@@ -96,6 +96,11 @@ class VinFastSensor(SensorEntity):
 
             val_clean = clean_val(val)
 
+            # ==============================================================
+            # KHỐI PHIÊN DỊCH TRẠNG THÁI (MAPPING)
+            # ==============================================================
+
+            # --- NHÓM ĐỘNG CƠ / LÁI ---
             if self._device_key in ["34183_00001_00001", "34187_00000_00000"]:
                 if val_clean == "1": self._attr_native_value = "P (Đỗ)"
                 elif val_clean == "2": self._attr_native_value = "R (Lùi)"
@@ -103,6 +108,17 @@ class VinFastSensor(SensorEntity):
                 elif val_clean == "4": self._attr_native_value = "D (Đi)"
                 else: self._attr_native_value = val
 
+            elif self._device_key == "34183_00001_00029":
+                if val_clean == "0": self._attr_native_value = "Nhả phanh tay"
+                elif val_clean == "1": self._attr_native_value = "Kéo phanh tay"
+                else: self._attr_native_value = val
+                
+            elif self._device_key == "34183_00001_00010":
+                if val_clean == "2": self._attr_native_value = "Chưa sẵn sàng"
+                elif val_clean == "3": self._attr_native_value = "Sẵn sàng chạy (Ready)"
+                else: self._attr_native_value = val
+
+            # --- NHÓM AN NINH / SẠC ---
             elif self._device_key == "34213_00001_00003":
                 if val_clean == "1": self._attr_native_value = "Đã Khóa"
                 elif val_clean == "0": self._attr_native_value = "Mở Khóa"
@@ -111,16 +127,6 @@ class VinFastSensor(SensorEntity):
             elif self._device_key == "34234_00001_00003":
                 if val_clean in ["1", "2"]: self._attr_native_value = "Đã Bật"
                 elif val_clean == "0": self._attr_native_value = "Đã Tắt"
-                else: self._attr_native_value = val
-
-            elif self._device_key.startswith("10351_"):
-                if val_clean == "0": self._attr_native_value = "Đóng"
-                elif val_clean == "1": self._attr_native_value = "Mở"
-                else: self._attr_native_value = val
-
-            elif self._device_key.startswith("34215_"):
-                if val_clean == "0": self._attr_native_value = "Đóng kín"
-                elif val_clean == "1": self._attr_native_value = "Đang mở"
                 else: self._attr_native_value = val
 
             elif self._device_key in ["34193_00001_00005", "34183_00000_00001"]:
@@ -134,12 +140,64 @@ class VinFastSensor(SensorEntity):
                 elif val_clean == "0": self._attr_native_value = "Đã Tắt"
                 else: self._attr_native_value = val
 
+            # --- NHÓM CỬA VÀ KÍNH (Đã sửa lỗi ngược cho VF5/VF6) ---
+            elif self._device_key.startswith("10351_"):
+                if val_clean == "0": self._attr_native_value = "Đóng"
+                elif val_clean == "1": self._attr_native_value = "Mở"
+                else: self._attr_native_value = val
+
+            elif self._device_key.startswith("34215_"):
+                # Bản vá: VF5/6 gửi 1=Đóng, 2=Mở. Bao lô VF8 gửi 0=Đóng.
+                if val_clean == "1": self._attr_native_value = "Đóng kín"
+                elif val_clean == "2": self._attr_native_value = "Đang mở"
+                elif val_clean == "0": self._attr_native_value = "Đóng kín"
+                else: self._attr_native_value = val
+
+            # --- NHÓM ĐÈN PHA ---
+            elif self._device_key == "34213_00004_00003":
+                if val_clean == "0": self._attr_native_value = "Tắt"
+                elif val_clean == "1": self._attr_native_value = "Đang nháy"
+                else: self._attr_native_value = val
+
+            # --- NHÓM ĐIỀU HÒA (HVAC) ---
+            elif self._device_key == "34184_00001_00004":
+                if val_clean == "0": self._attr_native_value = "Tắt"
+                elif val_clean == "1": self._attr_native_value = "Bật"
+                else: self._attr_native_value = val
+
+            elif self._device_key == "34184_00001_00011":
+                if val_clean == "0": self._attr_native_value = "Lấy gió ngoài"
+                elif val_clean == "1": self._attr_native_value = "Lấy gió trong"
+                else: self._attr_native_value = val
+
+            elif self._device_key == "34184_00001_00012":
+                if val_clean == "1": self._attr_native_value = "Gió mặt"
+                elif val_clean == "2": self._attr_native_value = "Gió mặt & chân"
+                elif val_clean == "3": self._attr_native_value = "Gió chân"
+                elif val_clean == "4": self._attr_native_value = "Gió kính & chân"
+                elif val_clean == "0": self._attr_native_value = "Gió kính (Sấy)"
+                else: self._attr_native_value = val
+
+            elif self._device_key == "34184_00001_00009":
+                if val_clean == "0": self._attr_native_value = "Tắt sấy kính"
+                elif val_clean == "1": self._attr_native_value = "Bật sấy kính"
+                else: self._attr_native_value = val
+
+            elif self._device_key in ["34184_00001_00025", "34184_00001_00041"]:
+                self._attr_native_value = val_clean # Giữ nguyên số mức quạt/lạnh
+
+            # --- TỌA ĐỘ GPS (Xử lý lỗi đỗ hầm) ---
             elif self._device_key in ["00006_00001_00000", "00006_00001_00001"]:
                 try:
-                    self._attr_native_value = round(float(val), 6)
+                    num_val = float(val)
+                    if num_val == 0.0:
+                        self._attr_native_value = "Đang tìm GPS..."
+                    else:
+                        self._attr_native_value = round(num_val, 6)
                 except (ValueError, TypeError):
-                    self._attr_native_value = val
+                    self._attr_native_value = "Không có tín hiệu"
 
+            # --- VIRTUAL SENSORS (Map & Trạm Sạc) ---
             elif self._device_key == "api_trip_route":
                 self._attr_native_value = "Dữ liệu Map"
                 self._attr_extra_state_attributes = {"route_json": str(val)}
@@ -148,7 +206,6 @@ class VinFastSensor(SensorEntity):
                 self._attr_native_value = "Danh sách Trạm"
                 self._attr_extra_state_attributes = {"stations": str(val)}
                 
-            # 1. SENSOR SẠC TẠI TRẠM (Gom lịch sử JSON vào Attribute)
             elif self._device_key == "api_public_charge_sessions":
                 self._attr_native_value = val
                 
@@ -159,7 +216,7 @@ class VinFastSensor(SensorEntity):
                     formatted_history = []
                     for item in history_data:
                         date = item.get("date", "")
-                        address = item.get("address", "")[:35] # Cắt bớt độ dài địa chỉ
+                        address = item.get("address", "")[:35]
                         kwh = item.get("kwh", 0)
                         dur = item.get("duration", 0)
                         formatted_history.append(f"{date} | {kwh} kWh ({dur} phút) | {address}")
@@ -169,7 +226,6 @@ class VinFastSensor(SensorEntity):
                 except Exception:
                     self._attr_extra_state_attributes = {"Lỗi": "Không thể parse dữ liệu sạc"}
 
-            # 2. SENSOR SẠC TẠI NHÀ (Gom tổng kWh vào Attribute)
             elif self._device_key == "api_home_charge_sessions":
                 self._attr_native_value = val
                 home_kwh = self.api._last_data.get("api_home_charge_kwh", 0.0)
