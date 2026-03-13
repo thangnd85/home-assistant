@@ -511,7 +511,7 @@ class VinFastAPI:
     def _run_ai_advisor_async(self, mode="trip", data_payload=None):
         try:
             if not getattr(self, 'gemini_api_key', None) or self.gemini_api_key.strip() == "":
-                self._last_data["api_ai_advisor"] = "Vui lòng nhập Google Gemini API Key để AI đánh giá."
+                self._last_data["api_ai_advisor"] = "Vui lòng nhập Google Gemini API Key trong phần Cấu hình Integration (Config Flow) để AI có thể đánh giá."
                 if self.callbacks:
                     for cb in self.callbacks: cb(self._last_data)
                 return 
@@ -572,9 +572,10 @@ class VinFastAPI:
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
 
+            # Cập nhật dùng model gemini-1.5-flash chuẩn nhất hiện nay
             clean_key = self.gemini_api_key.strip()
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
-            headers = {"Content-Type": "application/json", "x-goog-api-key": clean_key}
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={clean_key}"
+            headers = {"Content-Type": "application/json"}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             
             for attempt in range(2):
@@ -584,9 +585,16 @@ class VinFastAPI:
                     if ai_text:
                         self._last_data["api_ai_advisor"] = ai_text.replace("*", "").strip()
                     break 
+                elif res.status_code == 403:
+                    # BẢN VÁ: Giải thích rõ lỗi 403 cho người dùng
+                    self._last_data["api_ai_advisor"] = "❌ Lỗi 403: API Key bị sai hoặc chưa được cấp quyền. Hãy kiểm tra lại Google AI Studio."
+                    break
+                elif res.status_code == 400:
+                    self._last_data["api_ai_advisor"] = "❌ Lỗi 400: API Key không hợp lệ."
+                    break
                 elif res.status_code in [503, 429]:
                     if attempt < 1: time.sleep(2.5); continue
-                    else: self._last_data["api_ai_advisor"] = f"⏳ Google AI hiện đang quá tải ({res.status_code}). Vui lòng thử lại sau."
+                    else: self._last_data["api_ai_advisor"] = f"⏳ Google AI hiện đang quá tải (Lỗi {res.status_code})."
                 else:
                     self._last_data["api_ai_advisor"] = f"❌ Google báo lỗi {res.status_code}"
                     break
@@ -594,7 +602,10 @@ class VinFastAPI:
             self._save_state()
             if self.callbacks:
                 for cb in self.callbacks: cb(self._last_data)
-        except Exception: pass
+        except Exception as e: 
+            self._last_data["api_ai_advisor"] = f"❌ Lỗi kết nối đến Google AI: {e}"
+            if self.callbacks:
+                for cb in self.callbacks: cb(self._last_data)
 
     def fetch_charging_history(self):
         max_retries = 5 
